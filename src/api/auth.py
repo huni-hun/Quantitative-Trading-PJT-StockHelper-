@@ -7,7 +7,7 @@ logger = get_logger(__name__)
 
 
 class KISAuth:
-    """Handles OAuth2 token issuance and refresh for the KIS REST API."""
+    """KIS REST API의 OAuth2 토큰 발급 및 갱신을 처리한다."""
 
     TOKEN_PATH = "/oauth2/tokenP"
 
@@ -17,13 +17,13 @@ class KISAuth:
         self.access_token: str = ""
 
     def authenticate(self) -> str:
-        """Request a new access token from the KIS API.
+        """KIS API에 새 액세스 토큰을 요청한다.
 
         Returns:
-            str: The access token string.
+            str: 발급된 액세스 토큰 문자열.
 
         Raises:
-            RuntimeError: If the token request fails.
+            RuntimeError: 토큰 요청 실패 시 발생.
         """
         Settings.validate()
 
@@ -34,23 +34,23 @@ class KISAuth:
             "appsecret": Settings.APP_SECRET,
         }
 
-        logger.info("Requesting KIS access token (mock=%s).", Settings.IS_MOCK)
+        logger.info("KIS 액세스 토큰 요청 중 (모의투자=%s).", Settings.IS_MOCK)
         response = requests.post(url, json=payload, timeout=10)
         handle_api_error(response)
 
         data = response.json()
         self.access_token = data.get("access_token", "")
         if not self.access_token:
-            raise RuntimeError("Access token not found in API response.")
+            raise RuntimeError("API 응답에서 액세스 토큰을 찾을 수 없습니다.")
 
-        logger.info("Authentication successful.")
+        logger.info("인증 성공.")
         return self.access_token
 
     def get_headers(self) -> dict:
-        """Build common authorization headers for subsequent API calls.
+        """이후 API 호출에 사용할 공통 인증 헤더를 생성한다.
 
         Returns:
-            dict: HTTP headers including the bearer token.
+            dict: Bearer 토큰을 포함한 HTTP 헤더.
         """
         if not self.access_token:
             self.authenticate()

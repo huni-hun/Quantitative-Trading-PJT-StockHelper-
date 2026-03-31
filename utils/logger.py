@@ -11,23 +11,23 @@ _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _ensure_log_dir() -> None:
-    """Create the logs directory if it does not yet exist."""
+    """logs 디렉터리가 없으면 생성한다."""
     os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def get_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
-    """Return a named logger configured with both console and rotating file handlers.
+    """콘솔 핸들러와 로테이팅 파일 핸들러가 설정된 이름 기반 로거를 반환한다.
 
     Args:
-        name:  Logger name, typically ``__name__`` of the calling module.
-        level: Minimum log level (default: DEBUG).
+        name:  로거 이름. 일반적으로 호출 모듈의 ``__name__`` 을 사용한다.
+        level: 최소 로그 레벨 (기본값: DEBUG).
 
     Returns:
-        logging.Logger: Configured logger instance.
+        logging.Logger: 설정이 완료된 로거 인스턴스.
     """
     logger = logging.getLogger(name)
 
-    # Avoid adding duplicate handlers when the same logger is retrieved multiple times
+    # 동일 로거를 여러 번 가져올 때 핸들러 중복 등록 방지
     if logger.handlers:
         return logger
 
@@ -35,13 +35,13 @@ def get_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
 
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
 
-    # Console handler
+    # 콘솔 핸들러
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # Rotating file handler (max 5 MB per file, keep last 3 files)
+    # 로테이팅 파일 핸들러 (파일당 최대 5MB, 최근 3개 파일 유지)
     _ensure_log_dir()
     file_handler = RotatingFileHandler(
         LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"

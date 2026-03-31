@@ -7,35 +7,35 @@ logger = get_logger(__name__)
 
 
 class TradingBotError(Exception):
-    """Base exception for all trading-bot errors."""
+    """트레이딩 봇 전체 예외의 기반 클래스."""
 
 
 class APIError(TradingBotError):
-    """Raised when the KIS API returns an error response."""
+    """KIS API가 오류 응답을 반환했을 때 발생하는 예외."""
 
     def __init__(self, status_code: int, message: str) -> None:
-        super().__init__(f"API error {status_code}: {message}")
+        super().__init__(f"API 오류 {status_code}: {message}")
         self.status_code = status_code
         self.message = message
 
 
 class AuthenticationError(TradingBotError):
-    """Raised when authentication with the KIS API fails."""
+    """KIS API 인증 실패 시 발생하는 예외."""
 
 
 class OrderError(TradingBotError):
-    """Raised when an order cannot be placed or is rejected."""
+    """주문을 제출할 수 없거나 거부된 경우 발생하는 예외."""
 
 
 def handle_api_error(response: requests.Response) -> None:
-    """Inspect an HTTP response and raise an appropriate exception on failure.
+    """HTTP 응답을 검사하고 실패 시 적절한 예외를 발생시킨다.
 
     Args:
-        response: The :class:`requests.Response` object to inspect.
+        response: 검사할 :class:`requests.Response` 객체.
 
     Raises:
-        AuthenticationError: For HTTP 401 responses.
-        APIError:            For any other non-2xx HTTP response.
+        AuthenticationError: HTTP 401 응답인 경우.
+        APIError:            그 외 2xx가 아닌 HTTP 응답인 경우.
     """
     if response.ok:
         return
@@ -47,9 +47,9 @@ def handle_api_error(response: requests.Response) -> None:
     except ValueError:
         message = response.text
 
-    logger.error("API request failed | status=%d | message=%s", status, message)
+    logger.error("API 요청 실패 | 상태코드=%d | 메시지=%s", status, message)
 
     if status == 401:
-        raise AuthenticationError(f"Authentication failed: {message}")
+        raise AuthenticationError(f"인증 실패: {message}")
 
     raise APIError(status_code=status, message=message)

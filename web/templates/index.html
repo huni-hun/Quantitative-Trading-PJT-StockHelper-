@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>StockHelper 대시보드</title>
+  <link rel="stylesheet" href="/static/css/style.css"/>
+</head>
+<body>
+<div class="app">
+
+  <!-- 사이드바 -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">📈 StockHelper</div>
+    <ul class="sidebar-menu">
+      <li class="active" data-tab="dashboard">🏠 대시보드</li>
+      <li data-tab="settings-kis">🔑 KIS API 설정</li>
+      <li data-tab="settings-llm">🤖 LLM 설정</li>
+      <li data-tab="settings-tickers">📋 종목 관리</li>
+      <li data-tab="settings-strategy">⚙️ 전략 파라미터</li>
+      <li data-tab="logs">📜 실시간 로그</li>
+    </ul>
+    <div class="sidebar-footer">
+      <div id="bot-status-badge" class="badge badge-stopped">● 봇 중지됨</div>
+    </div>
+  </nav>
+
+  <!-- 메인 콘텐츠 -->
+  <main class="content">
+
+    <!-- ── 대시보드 ─────────────────────────────── -->
+    <section id="tab-dashboard" class="tab active">
+      <h1>대시보드</h1>
+
+      <!-- 상태 카드 -->
+      <div class="card-row">
+        <div class="card">
+          <div class="card-label">봇 상태</div>
+          <div id="d-bot-status" class="card-value">--</div>
+          <div id="d-started-at" class="card-sub"></div>
+        </div>
+        <div class="card">
+          <div class="card-label">누적 사이클</div>
+          <div id="d-cycle" class="card-value">0</div>
+        </div>
+        <div class="card trump-card">
+          <div class="card-label">🇺🇸 트럼프 시그널</div>
+          <div id="d-trump-signal" class="card-value">--</div>
+          <div id="d-trump-score" class="card-sub"></div>
+        </div>
+        <div class="card">
+          <div class="card-label">현재 시각</div>
+          <div id="d-time" class="card-value">--</div>
+        </div>
+      </div>
+
+      <!-- 종목별 시그널 테이블 -->
+      <div class="section-title">종목별 시그널</div>
+      <table class="signal-table">
+        <thead>
+          <tr>
+            <th>종목</th>
+            <th>뉴스 감성</th>
+            <th>기술적 분석</th>
+            <th>최종 결정</th>
+            <th>현재가</th>
+            <th>업데이트</th>
+          </tr>
+        </thead>
+        <tbody id="signal-tbody">
+          <tr><td colspan="6" class="empty">아직 데이터 없음 — 봇 실행 후 갱신됩니다.</td></tr>
+        </tbody>
+      </table>
+
+      <!-- 트럼프 최근 포스팅 -->
+      <div class="section-title">트럼프 최근 포스팅 분석</div>
+      <div id="trump-posts"></div>
+    </section>
+
+    <!-- ── KIS API 설정 ──────────────────────────── -->
+    <section id="tab-settings-kis" class="tab">
+      <h1>KIS API 설정</h1>
+      <div class="form-card">
+        <div class="form-group">
+          <label>앱키 (KIS_APP_KEY)</label>
+          <input type="password" id="KIS_APP_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+        </div>
+        <div class="form-group">
+          <label>앱시크릿 (KIS_APP_SECRET)</label>
+          <input type="password" id="KIS_APP_SECRET" placeholder="기존 값 유지 시 비워두세요"/>
+        </div>
+        <div class="form-group">
+          <label>계좌번호 (KIS_ACCOUNT_NUMBER) <span class="hint">8자리+상품코드2자리 붙여서 입력</span></label>
+          <input type="password" id="KIS_ACCOUNT_NUMBER" placeholder="예: 1234567801"/>
+        </div>
+        <div class="form-group">
+          <label>거래 모드 (KIS_IS_MOCK)</label>
+          <div class="toggle-row">
+            <label class="toggle">
+              <input type="checkbox" id="KIS_IS_MOCK"/>
+              <span class="slider"></span>
+            </label>
+            <span id="mock-label" class="toggle-label">모의투자</span>
+          </div>
+          <p class="warn">⚠️ 실전투자 전환 시 실제 자금이 사용됩니다.</p>
+        </div>
+        <button class="btn-save" onclick="saveSection('kis')">저장</button>
+      </div>
+    </section>
+
+    <!-- ── LLM 설정 ──────────────────────────────── -->
+    <section id="tab-settings-llm" class="tab">
+      <h1>LLM 설정</h1>
+      <div class="form-card">
+        <div class="form-group">
+          <label>LLM 제공자 (LLM_PROVIDER)</label>
+          <div class="radio-group">
+            <label><input type="radio" name="LLM_PROVIDER" value="groq"/> Groq <span class="badge-free">무료 플랜</span></label>
+            <label><input type="radio" name="LLM_PROVIDER" value="ollama"/> Ollama <span class="badge-free">로컬 무료</span></label>
+            <label><input type="radio" name="LLM_PROVIDER" value="openai"/> OpenAI <span class="badge-paid">유료</span></label>
+          </div>
+        </div>
+
+        <div class="llm-section" id="llm-groq">
+          <div class="form-group">
+            <label>Groq API 키 <a href="https://console.groq.com" target="_blank" class="link">발급받기 →</a></label>
+            <input type="password" id="GROQ_API_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>Groq 모델</label>
+            <select id="GROQ_MODEL">
+              <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (권장)</option>
+              <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (빠름)</option>
+              <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="llm-section" id="llm-ollama" style="display:none">
+          <div class="form-group">
+            <label>Ollama 서버 URL</label>
+            <input type="text" id="OLLAMA_BASE_URL" placeholder="http://localhost:11434"/>
+          </div>
+          <div class="form-group">
+            <label>Ollama 모델</label>
+            <input type="text" id="OLLAMA_MODEL" placeholder="llama3.2"/>
+          </div>
+          <p class="hint-block">💡 <code>ollama pull llama3.2</code> 로 모델을 먼저 다운로드하세요.</p>
+        </div>
+
+        <div class="llm-section" id="llm-openai" style="display:none">
+          <div class="form-group">
+            <label>OpenAI API 키 <a href="https://platform.openai.com/api-keys" target="_blank" class="link">발급받기 →</a></label>
+            <input type="password" id="OPENAI_API_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>OpenAI 모델</label>
+            <select id="OPENAI_MODEL">
+              <option value="gpt-4o-mini">gpt-4o-mini (저렴, 권장)</option>
+              <option value="gpt-4o">gpt-4o</option>
+              <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="btn-save" onclick="saveSection('llm')">저장</button>
+      </div>
+    </section>
+
+    <!-- ── 종목 관리 ──────────────────────────────── -->
+    <section id="tab-settings-tickers" class="tab">
+      <h1>종목 관리</h1>
+      <div class="form-card">
+        <div class="ticker-builder">
+          <div class="ticker-input-row">
+            <input type="text" id="new-ticker-code" placeholder="종목코드 (예: 005930 또는 AAPL)" style="flex:2"/>
+            <select id="new-ticker-exchange" style="flex:1">
+              <option value="KRX">KRX – 한국거래소</option>
+              <option value="NAS">NAS – 나스닥</option>
+              <option value="NYS">NYS – 뉴욕증권거래소</option>
+              <option value="AMS">AMS – 아멕스</option>
+              <option value="TSE">TSE – 도쿄증권거래소</option>
+              <option value="HKS">HKS – 홍콩증권거래소</option>
+              <option value="SHS">SHS – 상해증권거래소</option>
+              <option value="SZS">SZS – 심천증권거래소</option>
+              <option value="FRA">FRA – 프랑크푸르트</option>
+            </select>
+            <button class="btn-add" onclick="addTicker()">+ 추가</button>
+          </div>
+          <div id="ticker-list" class="ticker-list"></div>
+        </div>
+
+        <div class="form-group" style="margin-top:20px">
+          <label>종목당 주문 수량 (ORDER_QUANTITY)</label>
+          <input type="number" id="ORDER_QUANTITY" min="1" max="1000" placeholder="1"/>
+        </div>
+        <div class="form-group">
+          <label>전략 루프 실행 주기 (STRATEGY_INTERVAL_SECONDS) <span class="hint">초, 권장 300 이상</span></label>
+          <input type="number" id="STRATEGY_INTERVAL_SECONDS" min="10" placeholder="300"/>
+        </div>
+        <button class="btn-save" onclick="saveSection('tickers')">저장</button>
+      </div>
+    </section>
+
+    <!-- ── 전략 파라미터 ──────────────────────────── -->
+    <section id="tab-settings-strategy" class="tab">
+      <h1>전략 파라미터</h1>
+      <div class="form-card">
+
+        <div class="param-section-title">📊 기술적 분석 (RSI + 볼린저 밴드)</div>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>RSI 기간 (RSI_PERIOD)</label>
+            <input type="number" id="RSI_PERIOD" min="2" max="100" placeholder="14"/>
+            <span class="hint">기본값: 14</span>
+          </div>
+          <div class="form-group">
+            <label>과매도 기준 (RSI_OVERSOLD)</label>
+            <input type="number" id="RSI_OVERSOLD" min="1" max="49" placeholder="30"/>
+            <span class="hint">이 값 미만 → BUY 후보 (기본: 30)</span>
+          </div>
+          <div class="form-group">
+            <label>과매수 기준 (RSI_OVERBOUGHT)</label>
+            <input type="number" id="RSI_OVERBOUGHT" min="51" max="99" placeholder="70"/>
+            <span class="hint">이 값 초과 → SELL 후보 (기본: 70)</span>
+          </div>
+          <div class="form-group">
+            <label>볼린저 밴드 기간 (BB_PERIOD)</label>
+            <input type="number" id="BB_PERIOD" min="2" max="200" placeholder="20"/>
+            <span class="hint">기본값: 20</span>
+          </div>
+          <div class="form-group">
+            <label>볼린저 밴드 표준편차 배수 (BB_STD)</label>
+            <input type="number" id="BB_STD" min="0.5" max="5" step="0.1" placeholder="2.0"/>
+            <span class="hint">기본값: 2.0</span>
+          </div>
+          <div class="form-group">
+            <label>OHLCV 조회 기간 (LOOKBACK_DAYS)</label>
+            <input type="number" id="LOOKBACK_DAYS" min="20" max="365" placeholder="60"/>
+            <span class="hint">거래일 수 (기본: 60)</span>
+          </div>
+        </div>
+
+        <div class="param-section-title">📰 뉴스 감성 분석</div>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>감성 점수 임계값 (SENTIMENT_THRESHOLD)</label>
+            <input type="number" id="SENTIMENT_THRESHOLD" min="0.1" max="1.0" step="0.05" placeholder="0.3"/>
+            <span class="hint">이 값 이상/이하 → BUY/SELL (기본: 0.3)</span>
+          </div>
+          <div class="form-group">
+            <label>최대 헤드라인 수 (MAX_HEADLINES)</label>
+            <input type="number" id="MAX_HEADLINES" min="1" max="50" placeholder="15"/>
+            <span class="hint">LLM에 전달할 뉴스 수 (기본: 15)</span>
+          </div>
+        </div>
+
+        <div class="param-section-title">🇺🇸 트럼프 모니터</div>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>BULLISH 임계값 (TRUMP_BULL_THRESHOLD)</label>
+            <input type="number" id="TRUMP_BULL_THRESHOLD" min="0.1" max="1.0" step="0.05" placeholder="0.35"/>
+            <span class="hint">이 값 이상 → BULLISH (기본: 0.35)</span>
+          </div>
+          <div class="form-group">
+            <label>BEARISH 임계값 (TRUMP_BEAR_THRESHOLD)</label>
+            <input type="number" id="TRUMP_BEAR_THRESHOLD" min="-1.0" max="-0.1" step="0.05" placeholder="-0.35"/>
+            <span class="hint">이 값 이하 → BEARISH (기본: -0.35)</span>
+          </div>
+          <div class="form-group">
+            <label>폴링 간격 (TRUMP_POLL_INTERVAL)</label>
+            <input type="number" id="TRUMP_POLL_INTERVAL" min="10" max="300" placeholder="30"/>
+            <span class="hint">초 단위 (기본: 30)</span>
+          </div>
+        </div>
+
+        <button class="btn-save" onclick="saveSection('strategy')">저장</button>
+      </div>
+    </section>
+
+    <!-- ── 로그 뷰어 ──────────────────────────────── -->
+    <section id="tab-logs" class="tab">
+      <h1>실시간 로그</h1>
+      <div class="log-toolbar">
+        <button onclick="clearLog()">🗑 지우기</button>
+        <label><input type="checkbox" id="log-autoscroll" checked/> 자동 스크롤</label>
+        <label><input type="checkbox" id="log-filter-error"/> ERROR만 보기</label>
+      </div>
+      <div id="log-container" class="log-container"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 토스트 알림 -->
+<div id="toast" class="toast"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

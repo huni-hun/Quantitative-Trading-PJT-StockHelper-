@@ -1,110 +1,247 @@
-"""main.py – Entry point for the KIS Algorithmic Trading Bot.
+"""main.py – 한국투자증권(KIS) 자동 매매 봇 진입점.
 
-Execution flow:
-    1. Initialise the logger.
-    2. Validate configuration (environment variables).
-    3. Authenticate with the KIS REST API.
-    4. Run the strategy loop indefinitely (press Ctrl-C to stop).
+실행 흐름:
+    1. 로거 초기화.
+    2. 설정 유효성 검사 (환경 변수 확인).
+    3. KIS REST API 인증.
+    4. TrumpMonitor 백그라운드 스레드 시작 (24시간 상시 감시).
+    5. 전략 루프 무한 실행 – 장 운영시간에만 종목 순회, 장외엔 대기 (Ctrl-C로 중지).
 """
 
 import time
+from datetime import datetime, time as dtime
 
-from config.settings import Settings
+from config.settings import Settings, TickerInfo
 from src.api.auth import KISAuth
 from src.api.price import PriceAPI
 from src.api.order import OrderAPI
 from src.strategy.news_sentiment_llm import NewsSentimentStrategy
 from src.strategy.deadcat_technical import DeadcatTechnicalStrategy
+from src.strategy.trump_monitor import TrumpMonitor, TrumpSignalStore
 from utils.logger import get_logger
 from utils.error_handler import TradingBotError
+
+# 웹 대시보드 상태 업데이트 (web 서버가 같이 실행 중일 때만 동작)
+try:
+    from web.app import update_bot_signal, set_bot_running
+    _WEB_ENABLED = True
+except ImportError:
+    _WEB_ENABLED = False
+    def update_bot_signal(*a, **kw): pass
+    def set_bot_running(*a, **kw): pass
 
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 장 운영 시간 정의
+# 국내: 09:00 ~ 15:35 (KST)
+# 해외(미국): 22:30 ~ 05:00 다음날 (KST 기준, 서머타임 미적용 시 23:30~06:00)
 # ---------------------------------------------------------------------------
-TARGET_TICKER = "005930"        # Samsung Electronics (example)
-STRATEGY_INTERVAL_SECONDS = 60  # How often the strategy loop runs
+_KR_OPEN  = dtime(9, 0)
+_KR_CLOSE = dtime(15, 35)
+_US_OPEN  = dtime(22, 30)
+_US_CLOSE = dtime(5, 0)
+
+
+def _is_market_open(tickers: list[TickerInfo]) -> bool:
+    """현재 시각이 보유 종목 중 하나 이상의 장 운영 시간인지 확인한다."""
+    now = datetime.now().time()
+    has_domestic = any(t.is_domestic for t in tickers)
+    has_overseas = any(not t.is_domestic for t in tickers)
+
+    if has_domestic and _KR_OPEN <= now <= _KR_CLOSE:
+        return True
+    if has_overseas and (now >= _US_OPEN or now <= _US_CLOSE):
+        return True
+    return False
+
+
+def _seconds_until_next_open(tickers: list[TickerInfo]) -> int:
+    """다음 장 오픈까지 남은 초를 반환한다. 최소 60초."""
+    now = datetime.now().time()
+    has_domestic = any(t.is_domestic for t in tickers)
+    has_overseas = any(not t.is_domestic for t in tickers)
+
+    candidates: list[dtime] = []
+    if has_domestic:
+        candidates.append(_KR_OPEN)
+    if has_overseas:
+        candidates.append(_US_OPEN)
+
+    if not candidates:
+        return 60
+
+    now_secs = now.hour * 3600 + now.minute * 60 + now.second
+    min_wait = None
+    for open_time in candidates:
+        open_secs = open_time.hour * 3600 + open_time.minute * 60
+        diff = open_secs - now_secs
+        if diff <= 0:
+            diff += 86400
+        if min_wait is None or diff < min_wait:
+            min_wait = diff
+
+    return max(60, min_wait or 60)
+
+
+def _decide_order(
+    sentiment_signal: str,
+    technical_signal: str,
+    trump_signal: str,
+) -> str:
+    """세 가지 시그널을 통합하여 최종 매매 결정을 반환한다.
+
+    규칙:
+        - BEARISH 트럼프 시그널은 BUY를 즉시 차단 (하락 압력 우선)
+        - BULLISH 트럼프 시그널은 SELL을 즉시 차단 (상승 압력 우선)
+        - 나머지는 기존 두 전략 합의 룰 유지
+
+    Returns:
+        str: 'BUY', 'SELL', 'HOLD' 중 하나.
+    """
+    # 트럼프 BEARISH → 매수 차단
+    if trump_signal == "BEARISH" and sentiment_signal == "BUY" and technical_signal == "BUY":
+        return "HOLD"
+
+    # 트럼프 BULLISH → 매도 차단
+    if trump_signal == "BULLISH" and sentiment_signal == "SELL" and technical_signal == "SELL":
+        return "HOLD"
+
+    # 기본 두 전략 합의 룰
+    if sentiment_signal == "BUY" and technical_signal == "BUY":
+        return "BUY"
+    if sentiment_signal == "SELL" and technical_signal == "SELL":
+        return "SELL"
+
+    return "HOLD"
 
 
 def run_strategy_loop(
     price_api: PriceAPI,
     order_api: OrderAPI,
-    ticker: str,
+    tickers: list[TickerInfo],
 ) -> None:
-    """Continuously run both strategies and execute signals.
+    """전체 종목 리스트를 순회하며 전략을 실행하고 매매 시그널을 처리한다."""
+    strategies = {
+        t.code: {
+            "sentiment": NewsSentimentStrategy(ticker_info=t),
+            "technical": DeadcatTechnicalStrategy(price_api=price_api, ticker_info=t),
+        }
+        for t in tickers
+    }
+    trump_store = TrumpSignalStore()
 
-    Args:
-        price_api:  Initialised PriceAPI instance.
-        order_api:  Initialised OrderAPI instance.
-        ticker:     KRX stock code to trade.
-    """
-    sentiment_strategy = NewsSentimentStrategy(ticker=ticker)
-    technical_strategy = DeadcatTechnicalStrategy(ticker=ticker)
-
-    logger.info("Strategy loop started for ticker: %s", ticker)
+    logger.info(
+        "전략 루프 시작 | 대상 종목 %d개: %s",
+        len(tickers),
+        ", ".join(f"{t.code}({t.exchange})" for t in tickers),
+    )
 
     while True:
-        try:
-            # ---- Fetch current market price ----
-            price_data = price_api.get_current_price(ticker)
-            logger.info("Current price data: %s", price_data)
+        # ---- 장 운영 시간 체크 ----
+        if not _is_market_open(tickers):
+            wait = _seconds_until_next_open(tickers)
+            logger.info(
+                "현재 장 운영 시간 외 (KST %s) – 다음 장 오픈까지 %d분 대기.",
+                datetime.now().strftime("%H:%M:%S"),
+                wait // 60,
+            )
+            time.sleep(min(wait, 3600))   # 최대 1시간 단위로 깨어나 재확인
+            continue
 
-            # ---- News Sentiment Signal ----
-            sentiment_signal = sentiment_strategy.generate_signal()
-            logger.info("Sentiment signal: %s", sentiment_signal)
+        # ---- 트럼프 시그널 조회 (백그라운드 스레드가 갱신) ----
+        trump_signal = trump_store.latest_signal
+        trump_score  = trump_store.latest_score
+        logger.info("🇺🇸 현재 트럼프 시그널: %s (score=%.3f)", trump_signal, trump_score)
 
-            # ---- Technical Signal ----
-            technical_signal = technical_strategy.generate_signal()
-            logger.info("Technical signal: %s", technical_signal)
+        # ---- 전체 종목 순회 ----
+        for t in tickers:
+            logger.info("=" * 50)
+            logger.info("[%s:%s] 전략 실행 시작", t.code, t.exchange)
 
-            # ---- Combine signals and act (simple majority / both-agree rule) ----
-            if sentiment_signal == "BUY" and technical_signal == "BUY":
-                logger.info("Both strategies agree: BUY – placing market buy order.")
-                order_api.market_buy(ticker, quantity=1)
-            elif sentiment_signal == "SELL" and technical_signal == "SELL":
-                logger.info("Both strategies agree: SELL – placing market sell order.")
-                order_api.market_sell(ticker, quantity=1)
-            else:
+            try:
+                # ---- 현재 시세 조회 ----
+                price_data = price_api.get_current_price(t)
+                output = price_data.get("output", {})
+                current_price = output.get("stck_prpr") or output.get("last", "N/A")
+                logger.info("[%s] 현재가: %s", t.code, current_price)
+
+                # ---- 뉴스 감성 시그널 ----
+                sentiment_signal = strategies[t.code]["sentiment"].generate_signal()
+                logger.info("[%s] 감성 분석 시그널: %s", t.code, sentiment_signal)
+
+                # ---- 기술적 분석 시그널 ----
+                technical_signal = strategies[t.code]["technical"].generate_signal()
+                logger.info("[%s] 기술적 분석 시그널: %s", t.code, technical_signal)
+
+                # ---- 트럼프 시그널 통합 최종 결정 ----
+                decision = _decide_order(sentiment_signal, technical_signal, trump_signal)
                 logger.info(
-                    "No consensus signal (sentiment=%s, technical=%s) – HOLD.",
-                    sentiment_signal,
-                    technical_signal,
+                    "[%s] 최종 결정: %s (감성=%s, 기술=%s, 트럼프=%s)",
+                    t.code, decision, sentiment_signal, technical_signal, trump_signal,
                 )
 
-        except TradingBotError as exc:
-            logger.error("Trading bot error: %s", exc)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Unexpected error in strategy loop: %s", exc)
+                # 웹 대시보드 상태 업데이트
+                update_bot_signal(
+                    ticker=t.code,
+                    sentiment=sentiment_signal,
+                    technical=technical_signal,
+                    decision=decision,
+                    price=str(current_price),
+                )
 
-        logger.info("Sleeping %d seconds until next cycle.", STRATEGY_INTERVAL_SECONDS)
-        time.sleep(STRATEGY_INTERVAL_SECONDS)
+                if decision == "BUY":
+                    order_api.market_buy(t, quantity=Settings.ORDER_QUANTITY)
+                elif decision == "SELL":
+                    order_api.market_sell(t, quantity=Settings.ORDER_QUANTITY)
+
+            except TradingBotError as exc:
+                logger.error("[%s] 트레이딩 봇 오류: %s", t.code, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[%s] 예기치 않은 오류: %s", t.code, exc)
+
+        logger.info("=" * 50)
+        logger.info(
+            "전체 종목 순회 완료. %d초 후 다음 사이클 시작.",
+            Settings.STRATEGY_INTERVAL_SECONDS,
+        )
+        time.sleep(Settings.STRATEGY_INTERVAL_SECONDS)
 
 
 def main() -> None:
-    """Bot entry point: authenticate and start the strategy loop."""
-    logger.info("=== KIS Algorithmic Trading Bot starting ===")
+    """봇 진입점: 인증, TrumpMonitor 시작 후 전략 루프를 실행한다."""
+    logger.info("=== 한국투자증권 자동 매매 봇 시작 ===")
 
-    # Validate required environment variables before doing anything else
     try:
         Settings.validate()
     except ValueError as exc:
-        logger.error("Configuration error: %s", exc)
+        logger.error("설정 오류: %s", exc)
         raise SystemExit(1) from exc
 
-    # Authenticate
+    logger.info("매매 대상 종목: %s", [(t.code, t.exchange) for t in Settings.TARGET_TICKERS])
+    logger.info("종목당 주문 수량: %d주", Settings.ORDER_QUANTITY)
+    logger.info("실행 주기: %d초", Settings.STRATEGY_INTERVAL_SECONDS)
+
+    # 인증
     auth = KISAuth()
     auth.authenticate()
 
-    # Build API clients
+    # API 클라이언트 생성
     price_api = PriceAPI(auth=auth)
     order_api = OrderAPI(auth=auth)
 
-    # Start strategy loop
+    # TrumpMonitor 백그라운드 스레드 시작
+    trump_monitor = TrumpMonitor()
+    trump_monitor.start()
+    # 전략 루프 시작
+    set_bot_running(True)
     try:
-        run_strategy_loop(price_api, order_api, ticker=TARGET_TICKER)
+        run_strategy_loop(price_api, order_api, tickers=Settings.TARGET_TICKERS)
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user (KeyboardInterrupt).")
+        logger.info("사용자에 의해 봇 중지 (KeyboardInterrupt).")
+    finally:
+        set_bot_running(False)
+        trump_monitor.stop()
 
 
 if __name__ == "__main__":

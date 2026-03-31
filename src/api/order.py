@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import requests
-from config.settings import Settings
+from config.settings import Settings, TickerInfo
 from utils.logger import get_logger
 from utils.error_handler import handle_api_error
 
@@ -7,26 +9,89 @@ logger = get_logger(__name__)
 
 
 class OrderAPI:
-    """Executes market and limit orders via the KIS REST API."""
+    """KIS REST API를 통해 국내·해외 시장가 및 지정가 주문을 실행한다."""
 
-    ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+    # 국내 주문
+    DOMESTIC_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+    # 해외 주문
+    OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
 
-    # Transaction IDs differ between real and paper-trading environments
-    _TR_IDS = {
+    # 국내 tr_id
+    _DOMESTIC_TR_IDS = {
         "real": {"buy": "TTTC0802U", "sell": "TTTC0801U"},
         "mock": {"buy": "VTTC0802U", "sell": "VTTC0801U"},
+    }
+
+    # 해외 tr_id (실전 매수/매도, 모의 매수/매도)
+    _OVERSEAS_TR_IDS = {
+        "real": {"buy": "TTTT1002U", "sell": "TTTT1006U"},
+        "mock": {"buy": "VTTT1002U", "sell": "VTTT1001U"},
     }
 
     def __init__(self, auth) -> None:
         """
         Args:
-            auth: An authenticated KISAuth instance.
+            auth: 인증이 완료된 KISAuth 인스턴스.
         """
         self._auth = auth
         self._base_url = Settings.get_base_url()
         self._env = "mock" if Settings.IS_MOCK else "real"
 
-    def _place_order(
+    # ------------------------------------------------------------------
+    # 공개 인터페이스 – 국내/해외 자동 분기
+    # ------------------------------------------------------------------
+
+    def market_buy(self, ticker_info: TickerInfo, quantity: int) -> dict:
+        """시장가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다.
+
+        Args:
+            ticker_info: TickerInfo 인스턴스.
+            quantity:    매수 수량 (주).
+        """
+        if ticker_info.is_domestic:
+            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="buy")
+        return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="buy")
+
+    def market_sell(self, ticker_info: TickerInfo, quantity: int) -> dict:
+        """시장가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다.
+
+        Args:
+            ticker_info: TickerInfo 인스턴스.
+            quantity:    매도 수량 (주).
+        """
+        if ticker_info.is_domestic:
+            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="sell")
+        return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="sell")
+
+    def limit_buy(self, ticker_info: TickerInfo, quantity: int, price: float) -> dict:
+        """지정가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다.
+
+        Args:
+            ticker_info: TickerInfo 인스턴스.
+            quantity:    매수 수량 (주).
+            price:       지정가 (국내: 원, 해외: 현지 통화).
+        """
+        if ticker_info.is_domestic:
+            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="buy", price=int(price))
+        return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="buy", price=price)
+
+    def limit_sell(self, ticker_info: TickerInfo, quantity: int, price: float) -> dict:
+        """지정가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다.
+
+        Args:
+            ticker_info: TickerInfo 인스턴스.
+            quantity:    매도 수량 (주).
+            price:       지정가 (국내: 원, 해외: 현지 통화).
+        """
+        if ticker_info.is_domestic:
+            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="sell", price=int(price))
+        return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="sell", price=price)
+
+    # ------------------------------------------------------------------
+    # 국내 주문
+    # ------------------------------------------------------------------
+
+    def _domestic_order(
         self,
         ticker: str,
         quantity: int,
@@ -34,96 +99,77 @@ class OrderAPI:
         side: str,
         price: int = 0,
     ) -> dict:
-        """Internal helper that submits an order to the KIS API.
+        """국내 주식 주문을 KIS API에 제출한다.
 
         Args:
-            ticker:     6-digit KRX stock code.
-            quantity:   Number of shares.
-            order_type: '01' for limit order, '00' for market order.
-            side:       'buy' or 'sell'.
-            price:      Limit price (0 for market orders).
-
-        Returns:
-            dict: Parsed JSON response from the API.
+            ticker:     6자리 KRX 종목 코드.
+            quantity:   주문 수량.
+            order_type: '00' 시장가, '01' 지정가.
+            side:       'buy' 또는 'sell'.
+            price:      지정가 (시장가 주문 시 0).
         """
-        url = f"{self._base_url}{self.ORDER_PATH}"
+        url = f"{self._base_url}{self.DOMESTIC_ORDER_PATH}"
         headers = self._auth.get_headers()
-        headers["tr_id"] = self._TR_IDS[self._env][side]
+        headers["tr_id"] = self._DOMESTIC_TR_IDS[self._env][side]
 
         payload = {
-            "CANO": Settings.ACCOUNT_NUMBER[:8],
+            "CANO":        Settings.ACCOUNT_NUMBER[:8],
             "ACNT_PRDT_CD": Settings.ACCOUNT_NUMBER[8:],
-            "PDNO": ticker,
-            "ORD_DVSN": order_type,
-            "ORD_QTY": str(quantity),
-            "ORD_UNPR": str(price),
+            "PDNO":        ticker,
+            "ORD_DVSN":    order_type,
+            "ORD_QTY":     str(quantity),
+            "ORD_UNPR":    str(price),
         }
 
-        logger.info(
-            "Placing %s %s order | ticker=%s qty=%d price=%d",
-            self._env,
-            side,
-            ticker,
-            quantity,
-            price,
-        )
+        logger.info("[국내/%s] %s 주문 | 종목=%s 수량=%d 가격=%d", self._env, side, ticker, quantity, price)
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         handle_api_error(response)
 
         data = response.json()
-        logger.info("Order response: %s", data)
+        logger.info("[국내] 주문 응답: %s", data)
         return data
 
-    def market_buy(self, ticker: str, quantity: int) -> dict:
-        """Submit a market buy order.
+    # ------------------------------------------------------------------
+    # 해외 주문
+    # ------------------------------------------------------------------
+
+    def _overseas_order(
+        self,
+        ticker: str,
+        exchange: str,
+        quantity: int,
+        side: str,
+        price: float = 0.0,
+    ) -> dict:
+        """해외 주식 주문을 KIS API에 제출한다.
 
         Args:
-            ticker:   6-digit KRX stock code.
-            quantity: Number of shares to buy.
-
-        Returns:
-            dict: API response.
+            ticker:   해외 종목 티커 (예: AAPL).
+            exchange: KIS 거래소 코드 (예: NAS, NYS).
+            quantity: 주문 수량.
+            side:     'buy' 또는 'sell'.
+            price:    지정가 (0이면 시장가로 처리).
         """
-        return self._place_order(ticker, quantity, order_type="00", side="buy")
+        url = f"{self._base_url}{self.OVERSEAS_ORDER_PATH}"
+        headers = self._auth.get_headers()
+        headers["tr_id"] = self._OVERSEAS_TR_IDS[self._env][side]
 
-    def market_sell(self, ticker: str, quantity: int) -> dict:
-        """Submit a market sell order.
+        # 시장가: ORD_DVSN='00', 지정가: ORD_DVSN='00' (해외는 지정가도 00 사용, 가격으로 구분)
+        # 해외 시장가 주문 시 ORD_UNPR='0'
+        payload = {
+            "CANO":         Settings.ACCOUNT_NUMBER[:8],
+            "ACNT_PRDT_CD": Settings.ACCOUNT_NUMBER[8:],
+            "OVRS_EXCG_CD": exchange,
+            "PDNO":         ticker,
+            "ORD_DVSN":     "00",
+            "ORD_QTY":      str(quantity),
+            "OVRS_ORD_UNPR": str(price) if price else "0",
+        }
 
-        Args:
-            ticker:   6-digit KRX stock code.
-            quantity: Number of shares to sell.
+        logger.info("[해외:%s/%s] %s 주문 | 종목=%s 수량=%d 가격=%.4f", exchange, self._env, side, ticker, quantity, price)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        handle_api_error(response)
 
-        Returns:
-            dict: API response.
-        """
-        return self._place_order(ticker, quantity, order_type="00", side="sell")
-
-    def limit_buy(self, ticker: str, quantity: int, price: int) -> dict:
-        """Submit a limit buy order.
-
-        Args:
-            ticker:   6-digit KRX stock code.
-            quantity: Number of shares to buy.
-            price:    Limit price in KRW.
-
-        Returns:
-            dict: API response.
-        """
-        return self._place_order(
-            ticker, quantity, order_type="01", side="buy", price=price
-        )
-
-    def limit_sell(self, ticker: str, quantity: int, price: int) -> dict:
-        """Submit a limit sell order.
-
-        Args:
-            ticker:   6-digit KRX stock code.
-            quantity: Number of shares to sell.
-            price:    Limit price in KRW.
-
-        Returns:
-            dict: API response.
-        """
-        return self._place_order(
-            ticker, quantity, order_type="01", side="sell", price=price
-        )
+        data = response.json()
+        logger.info("[해외] 주문 응답: %s", data)
+        return data
