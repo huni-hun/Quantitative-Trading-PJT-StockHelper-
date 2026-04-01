@@ -10,9 +10,11 @@ load_dotenv()
 @dataclass
 class TickerInfo:
     """종목 정보를 담는 데이터 클래스."""
-    code: str        # 종목 코드 (예: 005930, AAPL)
-    exchange: str    # 거래소 코드 (예: KRX, NAS, NYS, AMS, TSE 등)
-    is_domestic: bool  # 국내 종목 여부
+    code: str
+    exchange: str
+    is_domestic: bool
+    qty: int = 1          # 종목별 1회 주문 수량 (0이면 글로벌 ORDER_QUANTITY 사용)
+    interval: int = 0     # 종목별 전략 루프 주기(초) (0이면 글로벌 STRATEGY_INTERVAL_SECONDS 사용)
 
 
 # KIS API 해외 거래소 코드표
@@ -34,30 +36,38 @@ EXCHANGE_CODE_MAP: dict[str, str] = {
 def _parse_tickers(raw: str) -> list[TickerInfo]:
     """쉼표로 구분된 종목 문자열을 TickerInfo 리스트로 파싱한다.
 
-    형식:
-        - 국내: '005930' 또는 '005930:KRX'
-        - 해외: 'AAPL:NAS', 'TSLA:NAS', '9984:TSE'
+    형식 (콜론 구분):
+        코드[:거래소[:수량[:주기(초)]]]
 
-    국내 종목은 거래소 코드를 생략하면 자동으로 KRX로 설정된다.
-    해외 종목은 반드시 거래소 코드를 명시해야 한다.
+    예시:
+        005930                    → 삼성전자, KRX, qty=0(글로벌), interval=0(글로벌)
+        005930:KRX                → 위와 동일
+        005930:KRX:3              → 수량 3주
+        005930:KRX:3:1800         → 수량 3주, 주기 1800초
+        AAPL:NAS:1:3600           → 나스닥 AAPL, 1주, 3600초
     """
     result: list[TickerInfo] = []
     for item in raw.split(","):
-        item = item.strip()
-        if not item:
+        parts = [p.strip() for p in item.split(":")]
+        if not parts or not parts[0]:
             continue
 
-        if ":" in item:
-            code, exchange = item.split(":", 1)
-            code = code.strip().upper()
-            exchange = exchange.strip().upper()
-        else:
-            code = item.strip().upper()
-            exchange = "KRX"  # 거래소 미지정 시 국내로 간주
+        code     = parts[0].upper()
+        exchange = parts[1].upper() if len(parts) > 1 and parts[1] else "KRX"
+        try:
+            qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+        except ValueError:
+            qty = 0
+        try:
+            interval = int(parts[3]) if len(parts) > 3 and parts[3] else 0
+        except ValueError:
+            interval = 0
 
-        # 숫자 6자리면 국내, 그 외(알파벳 포함 등)면 해외
         is_domestic = bool(re.fullmatch(r"\d{6}", code))
-        result.append(TickerInfo(code=code, exchange=exchange, is_domestic=is_domestic))
+        result.append(TickerInfo(
+            code=code, exchange=exchange,
+            is_domestic=is_domestic, qty=qty, interval=interval,
+        ))
 
     return result
 
@@ -65,38 +75,64 @@ def _parse_tickers(raw: str) -> list[TickerInfo]:
 class Settings:
     """환경 변수에서 모든 설정값을 불러오고 유효성을 검사한다."""
 
-    # KIS API 인증 정보
-    APP_KEY: str = os.getenv("KIS_APP_KEY", "")
-    APP_SECRET: str = os.getenv("KIS_APP_SECRET", "")
-    ACCOUNT_NUMBER: str = os.getenv("KIS_ACCOUNT_NUMBER", "")
-
-    # KIS API 기본 URL
+    # ── KIS API 도메인 ────────────────────────────────────────────
     REAL_DOMAIN: str = "https://openapi.koreainvestment.com:9443"
     MOCK_DOMAIN: str = "https://openapivts.koreainvestment.com:29443"
 
-    # 실전 투자 vs 모의 투자 환경 선택
+    # ── 거래 모드 선택 ────────────────────────────────────────────
+    # true=모의투자, false=실전투자
     IS_MOCK: bool = os.getenv("KIS_IS_MOCK", "true").lower() == "true"
 
-    # ── LLM 제공자 설정 ──────────────────────────────────────────────
+    # ── 실전투자 인증 정보 ────────────────────────────────────────
+    REAL_APP_KEY:       str = os.getenv("KIS_REAL_APP_KEY", "")
+    REAL_APP_SECRET:    str = os.getenv("KIS_REAL_APP_SECRET", "")
+    REAL_ACCOUNT_NUMBER: str = os.getenv("KIS_REAL_ACCOUNT_NUMBER", "")
+
+    # ── 모의투자 인증 정보 ────────────────────────────────────────
+    MOCK_APP_KEY:       str = os.getenv("KIS_MOCK_APP_KEY", "")
+    MOCK_APP_SECRET:    str = os.getenv("KIS_MOCK_APP_SECRET", "")
+    MOCK_ACCOUNT_NUMBER: str = os.getenv("KIS_MOCK_ACCOUNT_NUMBER", "")
+
+    # ── 하위 호환: 현재 모드에 맞는 키를 자동 선택 ──────────────
+    @classmethod
+    def _active(cls) -> tuple[str, str, str]:
+        """현재 IS_MOCK 값에 따라 (app_key, app_secret, account_number) 반환."""
+        if cls.IS_MOCK:
+            return cls.MOCK_APP_KEY, cls.MOCK_APP_SECRET, cls.MOCK_ACCOUNT_NUMBER
+        return cls.REAL_APP_KEY, cls.REAL_APP_SECRET, cls.REAL_ACCOUNT_NUMBER
+
+    @classmethod
+    @property
+    def APP_KEY(cls) -> str:
+        return cls._active()[0]
+
+    @classmethod
+    @property
+    def APP_SECRET(cls) -> str:
+        return cls._active()[1]
+
+    @classmethod
+    @property
+    def ACCOUNT_NUMBER(cls) -> str:
+        return cls._active()[2]
+
+    # ── LLM 제공자 설정 ──────────────────────────────────────────
     # LLM_PROVIDER: openai | groq | ollama
     #   - openai : OpenAI API (유료)          모델 예: gpt-4o-mini
     #   - groq   : Groq API (무료 플랜 있음)  모델 예: llama-3.3-70b-versatile
     #   - ollama : 로컬 무료                  모델 예: llama3.2
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").lower()
 
-    # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL:   str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    # Groq (무료 플랜: https://console.groq.com)
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL:   str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-    # Ollama (로컬 서버, 완전 무료: https://ollama.com)
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL:    str = os.getenv("OLLAMA_MODEL", "llama3.2")
 
-    # 매매 대상 종목 리스트
+    # ── 매매 설정 ────────────────────────────────────────────────
     TARGET_TICKERS: list[TickerInfo] = _parse_tickers(
         os.getenv(
             "TARGET_TICKERS",
@@ -104,11 +140,8 @@ class Settings:
         )
     )
 
-    # 종목당 1회 매매 수량
     ORDER_QUANTITY: int = int(os.getenv("ORDER_QUANTITY", "1"))
-
-    # 전략 루프 실행 주기 (초)
-    STRATEGY_INTERVAL_SECONDS: int = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "60"))
+    STRATEGY_INTERVAL_SECONDS: int = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "3600"))
 
     @classmethod
     def get_base_url(cls) -> str:
@@ -118,25 +151,24 @@ class Settings:
     @classmethod
     def validate(cls) -> None:
         """필수 인증 정보가 누락된 경우 ValueError를 발생시킨다."""
-        # KIS 필수 항목
-        missing = [
-            name
-            for name, value in {
-                "KIS_APP_KEY":        cls.APP_KEY,
-                "KIS_APP_SECRET":     cls.APP_SECRET,
-                "KIS_ACCOUNT_NUMBER": cls.ACCOUNT_NUMBER,
-            }.items()
-            if not value
-        ]
+        app_key, app_secret, account_number = cls._active()
+        mode_label = "모의투자" if cls.IS_MOCK else "실전투자"
+        prefix = "KIS_MOCK" if cls.IS_MOCK else "KIS_REAL"
 
-        # LLM 제공자별 필수 항목 추가 체크
+        missing = []
+        if not app_key:
+            missing.append(f"{prefix}_APP_KEY")
+        if not app_secret:
+            missing.append(f"{prefix}_APP_SECRET")
+        if not account_number:
+            missing.append(f"{prefix}_ACCOUNT_NUMBER")
+
         if cls.LLM_PROVIDER == "openai" and not cls.OPENAI_API_KEY:
             missing.append("OPENAI_API_KEY")
         elif cls.LLM_PROVIDER == "groq" and not cls.GROQ_API_KEY:
             missing.append("GROQ_API_KEY")
-        # ollama는 로컬이므로 API 키 불필요
 
         if missing:
-            raise ValueError(f"필수 환경 변수 누락: {', '.join(missing)}")
-
-
+            raise ValueError(
+                f"[{mode_label}] 필수 환경 변수 누락: {', '.join(missing)}"
+            )

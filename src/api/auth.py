@@ -27,14 +27,16 @@ class KISAuth:
         """
         Settings.validate()
 
+        app_key, app_secret, _ = Settings._active()
         url = f"{self._base_url}{self.TOKEN_PATH}"
         payload = {
             "grant_type": "client_credentials",
-            "appkey": Settings.APP_KEY,
-            "appsecret": Settings.APP_SECRET,
+            "appkey":     app_key,
+            "appsecret":  app_secret,
         }
 
-        logger.info("KIS 액세스 토큰 요청 중 (모의투자=%s).", Settings.IS_MOCK)
+        mode = "모의투자" if Settings.IS_MOCK else "실전투자"
+        logger.info("KIS 액세스 토큰 요청 중 (%s).", mode)
         response = requests.post(url, json=payload, timeout=10)
         handle_api_error(response)
 
@@ -55,9 +57,10 @@ class KISAuth:
         if not self.access_token:
             self.authenticate()
 
+        app_key, app_secret, _ = Settings._active()
         return {
             "Content-Type": "application/json",
             "authorization": f"Bearer {self.access_token}",
-            "appkey": Settings.APP_KEY,
-            "appsecret": Settings.APP_SECRET,
+            "appkey":    app_key,
+            "appsecret": app_secret,
         }

@@ -23,12 +23,13 @@ from utils.error_handler import TradingBotError
 
 # 웹 대시보드 상태 업데이트 (web 서버가 같이 실행 중일 때만 동작)
 try:
-    from web.app import update_bot_signal, set_bot_running
+    from web.app import update_bot_signal, set_bot_running, _record_trade
     _WEB_ENABLED = True
 except ImportError:
     _WEB_ENABLED = False
     def update_bot_signal(*a, **kw): pass
     def set_bot_running(*a, **kw): pass
+    def _record_trade(*a, **kw): pass
 
 logger = get_logger(__name__)
 
@@ -191,9 +192,21 @@ def run_strategy_loop(
                 )
 
                 if decision == "BUY":
-                    order_api.market_buy(t, quantity=Settings.ORDER_QUANTITY)
+                    qty = t.qty if t.qty > 0 else Settings.ORDER_QUANTITY
+                    order_api.market_buy(t, quantity=qty)
+                    _record_trade(
+                        ticker=t.code, name=t.code,
+                        side="BUY", price=float(current_price) if str(current_price).replace('.','').isdigit() else 0,
+                        qty=qty, exchange=t.exchange,
+                    )
                 elif decision == "SELL":
-                    order_api.market_sell(t, quantity=Settings.ORDER_QUANTITY)
+                    qty = t.qty if t.qty > 0 else Settings.ORDER_QUANTITY
+                    order_api.market_sell(t, quantity=qty)
+                    _record_trade(
+                        ticker=t.code, name=t.code,
+                        side="SELL", price=float(current_price) if str(current_price).replace('.','').isdigit() else 0,
+                        qty=qty, exchange=t.exchange,
+                    )
 
             except TradingBotError as exc:
                 logger.error("[%s] 트레이딩 봇 오류: %s", t.code, exc)
@@ -205,7 +218,11 @@ def run_strategy_loop(
             "전체 종목 순회 완료. %d초 후 다음 사이클 시작.",
             Settings.STRATEGY_INTERVAL_SECONDS,
         )
-        time.sleep(Settings.STRATEGY_INTERVAL_SECONDS)
+        # 종목별 interval 중 가장 짧은 값을 기준으로 대기
+        # (0이면 글로벌 STRATEGY_INTERVAL_SECONDS 사용)
+        intervals = [t.interval for t in tickers if t.interval > 0]
+        sleep_sec = min(intervals) if intervals else Settings.STRATEGY_INTERVAL_SECONDS
+        time.sleep(sleep_sec)
 
 
 def main() -> None:

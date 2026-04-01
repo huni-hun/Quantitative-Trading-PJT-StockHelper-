@@ -51,7 +51,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .content {
   margin-left: var(--sidebar-w);
   flex: 1; padding: 28px 32px;
-  max-width: 1100px;
+  max-width: 1400px;
 }
 
 /* ── 탭 ─────────────────────────────────── */
@@ -162,18 +162,118 @@ input:checked + .slider::before { transform: translateX(20px); background: #fff;
   cursor: pointer; white-space: nowrap;
 }
 
-/* ── 종목 리스트 ────────────────────────── */
+/* ── 종목 관리 2열 레이아웃 ─────────────── */
+.tickers-layout {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .tickers-layout { grid-template-columns: 1fr; }
+}
+
+/* 왼쪽 입력 폼 카드 */
+.ticker-add-card { max-width: none; }
+
+/* 오른쪽 종목 리스트 패널 */
+.ticker-list-panel {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  min-height: 200px;
+}
+.ticker-list-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 14px; font-size: 13px; font-weight: 700;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.ticker-count-badge {
+  display: inline-block; background: var(--accent);
+  color: #fff; font-size: 11px; padding: 1px 7px;
+  border-radius: 10px; margin-left: 6px; font-weight: 700;
+}
+
+/* 종목 카드 */
+.ticker-card-list { display: flex; flex-direction: column; gap: 8px; }
+.ticker-card {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.ticker-card:hover { border-color: var(--accent); }
+.ticker-card-ghost { opacity: .4; background: var(--accent) !important; }
+
+/* 드래그 핸들 */
+.ticker-card-drag {
+  color: var(--text-sub); font-size: 16px; cursor: grab;
+  padding: 0 4px; user-select: none; flex-shrink: 0;
+}
+.ticker-card-drag:active { cursor: grabbing; }
+
+/* 카드 본문 */
+.ticker-card-body { flex: 1; min-width: 0; }
+.ticker-card-top {
+  display: flex; align-items: center; gap: 7px;
+  margin-bottom: 5px; flex-wrap: wrap;
+}
+.ticker-card-code { font-size: 14px; }
+.ticker-card-name {
+  font-size: 12px; color: var(--text-sub);
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ticker-card-meta { display: flex; gap: 12px; flex-wrap: wrap; }
+.ticker-meta-item { font-size: 11px; color: var(--text-sub); }
+.ticker-meta-item b { color: var(--text); }
+
+/* 액션 버튼 */
+.ticker-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.btn-ticker-edit,
+.btn-ticker-remove {
+  background: none; border: 1px solid var(--border);
+  border-radius: 6px; width: 28px; height: 28px;
+  cursor: pointer; font-size: 12px; color: var(--text-sub);
+  display: flex; align-items: center; justify-content: center;
+  transition: .15s;
+}
+.btn-ticker-edit:hover   { border-color: var(--accent); color: var(--accent); }
+.btn-ticker-remove:hover { border-color: var(--red); color: var(--red); }
+
+/* 빈 상태 */
+.ticker-empty {
+  text-align: center; color: var(--text-sub); font-size: 13px;
+  padding: 32px 0;
+}
+
+/* ── 기존 ticker-tag (다른 곳에서 혹시 쓰임) ── */
 .ticker-input-row { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
 .ticker-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.ticker-tag {
-  display: flex; align-items: center; gap: 8px;
+
+/* ── 거래소 / 모드 뱃지 ─────────────────── */
+.exch-badge {
+  display: inline-block; padding: 2px 7px; border-radius: 10px;
   background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 20px; padding: 5px 12px; font-size: 13px;
+  font-size: 11px; color: var(--text-sub);
 }
-.ticker-tag .remove {
-  cursor: pointer; color: var(--red); font-size: 15px; line-height: 1;
+.mode-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.mode-real  { background: #2e1a1a; color: var(--red); }
+.mode-mock  { background: #1a2e40; color: var(--accent); }
+
+/* ── 테이블 툴바 ────────────────────────── */
+.table-toolbar {
+  display: flex; gap: 10px; align-items: center;
+  margin-bottom: 12px; font-size: 13px; flex-wrap: wrap;
 }
-.ticker-tag .remove:hover { color: #ff8888; }
+.table-toolbar button {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 14px; border-radius: 6px;
+  font-size: 13px; cursor: pointer; transition: border-color .15s;
+}
+.table-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+.btn-danger {
+  border-color: var(--red) !important; color: var(--red) !important;
+}
+.btn-danger:hover { background: #2e1a1a !important; }
 
 /* ── 전략 파라미터 그리드 ───────────────── */
 .param-section-title {
@@ -216,6 +316,116 @@ input:checked + .slider::before { transform: translateX(20px); background: #fff;
 .toast.success { border-color: var(--green); color: var(--green); }
 .toast.error   { border-color: var(--red);   color: var(--red); }
 
+/* ── KIS 거래 모드 선택 카드 ────────────── */
+.kis-mode-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px 24px;
+  margin-bottom: 20px; max-width: 680px;
+}
+.kis-mode-title {
+  font-size: 13px; font-weight: 700; color: var(--text-sub);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px;
+}
+.kis-mode-row { display: flex; gap: 12px; }
+.btn-mode {
+  flex: 1; padding: 12px 0; border-radius: 8px; font-size: 14px;
+  font-weight: 700; cursor: pointer; border: 2px solid var(--border);
+  background: var(--bg3); color: var(--text-sub); transition: .15s;
+}
+.btn-mode:hover { border-color: var(--accent); color: var(--text); }
+.btn-mode.active[id="btn-mode-mock"] {
+  background: #1a2e40; border-color: var(--accent); color: var(--accent);
+}
+.btn-mode.active[id="btn-mode-real"] {
+  background: #2e1a1a; border-color: var(--red); color: var(--red);
+}
+
+/* ── KIS 인증 정보 2열 그리드 ───────────── */
+.kis-creds-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 760px) {
+  .kis-creds-grid { grid-template-columns: 1fr; }
+}
+.kis-cred-card { max-width: none; }
+.kis-cred-header {
+  font-size: 13px; font-weight: 700; padding: 8px 0 12px;
+  margin-bottom: 14px; border-bottom: 2px solid var(--border);
+}
+.kis-cred-header.real { color: var(--red); border-color: var(--red); }
+.kis-cred-header.mock { color: var(--accent); border-color: var(--accent); }
+
+/* 활성 모드 카드 강조 */
+.kis-active-card { box-shadow: 0 0 0 2px var(--accent); }
+.kis-active-card .kis-cred-header.real { color: var(--red); }
+.kis-active-card .kis-cred-header.mock { color: var(--accent); }
+
 /* ── LLM 섹션 전환 애니메이션 ──────────── */
 .llm-section { animation: fadeIn .2s; }
 @keyframes fadeIn { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
+
+/* ── 섹션 타이틀 확장 (버튼 포함 행) ───── */
+.news-section-title,
+.trump-section-title {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.news-meta {
+  font-size: 11px; color: var(--text-sub); font-weight: 400; margin-left: auto;
+}
+.btn-news-refresh {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text-sub); padding: 3px 10px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s;
+}
+.btn-news-refresh:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.btn-news-refresh:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── 마켓 뉴스 패널 ─────────────────────── */
+.market-news-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 26px;
+}
+@media (max-width: 720px) {
+  .market-news-panel { grid-template-columns: 1fr; }
+}
+
+.news-summary-box,
+.news-headlines-box {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+}
+.news-summary-label {
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px;
+}
+.news-summary-text {
+  font-size: 13px; line-height: 1.75; color: var(--text);
+  white-space: pre-line;
+}
+.news-headline-list {
+  list-style: none; padding: 0; margin: 0;
+}
+.news-item {
+  border-bottom: 1px solid var(--border); padding: 7px 0;
+  font-size: 13px; line-height: 1.5;
+}
+.news-item:last-child { border-bottom: none; }
+.news-link {
+  color: var(--text); text-decoration: none; transition: color .15s;
+}
+.news-link:hover { color: var(--accent); }
+.news-loading { color: var(--text-sub); font-size: 13px; }
+
+/* ── 트럼프 포스팅 패널 ─────────────────── */
+.trump-posts-panel {
+  background: var(--bg2); border: 1px solid var(--accent2);
+  border-radius: var(--radius); padding: 16px 18px;
+  margin-bottom: 26px;
+}
+.trump-latest-badge {
+  font-size: 12px; font-weight: 700;
+}
+

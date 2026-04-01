@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>StockHelper 대시보드</title>
   <link rel="stylesheet" href="/static/css/style.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -14,6 +15,8 @@
     <div class="sidebar-logo">📈 StockHelper</div>
     <ul class="sidebar-menu">
       <li class="active" data-tab="dashboard">🏠 대시보드</li>
+      <li data-tab="holdings">📦 보유종목</li>
+      <li data-tab="trades">📒 거래내역</li>
       <li data-tab="settings-kis">🔑 KIS API 설정</li>
       <li data-tab="settings-llm">🤖 LLM 설정</li>
       <li data-tab="settings-tickers">📋 종목 관리</li>
@@ -72,41 +75,113 @@
         </tbody>
       </table>
 
+      <!-- 오늘의 증시 뉴스 요약 -->
+      <div class="section-title news-section-title">
+        📰 오늘의 증시 뉴스 요약
+        <span id="news-fetched-at" class="news-meta"></span>
+        <button class="btn-news-refresh" onclick="refreshMarketNews(true)" title="즉시 새로고침">⟳ 새로고침</button>
+      </div>
+      <div id="market-news-panel" class="market-news-panel">
+        <!-- LLM 핵심 요약 -->
+        <div class="news-summary-box" id="news-summary-box">
+          <div class="news-summary-label">🤖 AI 핵심 요약</div>
+          <div id="news-summary-text" class="news-summary-text">로딩 중...</div>
+        </div>
+        <!-- 헤드라인 목록 -->
+        <div class="news-headlines-box">
+          <div class="news-summary-label">📋 헤드라인</div>
+          <ul id="news-headline-list" class="news-headline-list">
+            <li class="news-loading">뉴스 수집 중...</li>
+          </ul>
+        </div>
+      </div>
+
       <!-- 트럼프 최근 포스팅 -->
-      <div class="section-title">트럼프 최근 포스팅 분석</div>
-      <div id="trump-posts"></div>
+      <div class="section-title trump-section-title">
+        🇺🇸 @realDonaldTrump 포스팅 분석
+        <span id="trump-latest-badge" class="trump-latest-badge"></span>
+      </div>
+      <div id="trump-posts-panel" class="trump-posts-panel">
+        <div id="trump-posts">
+          <p style="color:var(--text-sub);font-size:13px;">아직 분석된 포스팅 없음</p>
+        </div>
+      </div>
     </section>
 
     <!-- ── KIS API 설정 ──────────────────────────── -->
     <section id="tab-settings-kis" class="tab">
       <h1>KIS API 설정</h1>
-      <div class="form-card">
-        <div class="form-group">
-          <label>앱키 (KIS_APP_KEY)</label>
-          <input type="password" id="KIS_APP_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+
+      <!-- ① 거래 모드 선택 (최상단 고정) -->
+      <div class="kis-mode-card">
+        <div class="kis-mode-title">거래 모드 선택</div>
+        <div class="kis-mode-row">
+          <button id="btn-mode-mock" class="btn-mode active" onclick="setKisMode(true)">
+            🧪 모의투자
+          </button>
+          <button id="btn-mode-real" class="btn-mode" onclick="setKisMode(false)">
+            💰 실전투자
+          </button>
         </div>
-        <div class="form-group">
-          <label>앱시크릿 (KIS_APP_SECRET)</label>
-          <input type="password" id="KIS_APP_SECRET" placeholder="기존 값 유지 시 비워두세요"/>
-        </div>
-        <div class="form-group">
-          <label>계좌번호 (KIS_ACCOUNT_NUMBER) <span class="hint">8자리+상품코드2자리 붙여서 입력</span></label>
-          <input type="password" id="KIS_ACCOUNT_NUMBER" placeholder="예: 1234567801"/>
-        </div>
-        <div class="form-group">
-          <label>거래 모드 (KIS_IS_MOCK)</label>
-          <div class="toggle-row">
-            <label class="toggle">
-              <input type="checkbox" id="KIS_IS_MOCK"/>
-              <span class="slider"></span>
-            </label>
-            <span id="mock-label" class="toggle-label">모의투자</span>
-          </div>
-          <p class="warn">⚠️ 실전투자 전환 시 실제 자금이 사용됩니다.</p>
-        </div>
-        <button class="btn-save" onclick="saveSection('kis')">저장</button>
+        <p id="kis-mode-warn" class="warn" style="display:none">
+          ⚠️ 실전투자 모드입니다. 실제 자금이 사용됩니다.
+        </p>
       </div>
+
+      <!-- ② 실전투자 / 모의투자 입력 카드 2열 -->
+      <div class="kis-creds-grid">
+
+        <!-- 실전투자 -->
+        <div class="form-card kis-cred-card" id="kis-real-card">
+          <div class="kis-cred-header real">💰 실전투자 인증 정보</div>
+          <div class="form-group">
+            <label>앱키 (KIS_REAL_APP_KEY)</label>
+            <input type="password" id="KIS_REAL_APP_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>앱시크릿 (KIS_REAL_APP_SECRET)</label>
+            <input type="password" id="KIS_REAL_APP_SECRET" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>계좌번호 (KIS_REAL_ACCOUNT_NUMBER)
+              <span class="hint">8자리+상품코드 2자리</span>
+            </label>
+            <input type="password" id="KIS_REAL_ACCOUNT_NUMBER" placeholder="예: 1234567801"/>
+          </div>
+          <p class="hint-block">
+            🔗 <a href="https://apiportal.koreainvestment.com" target="_blank" class="link">KIS API 포털</a>에서
+            <strong>실전투자</strong> 앱 발급
+          </p>
+        </div>
+
+        <!-- 모의투자 -->
+        <div class="form-card kis-cred-card" id="kis-mock-card">
+          <div class="kis-cred-header mock">🧪 모의투자 인증 정보</div>
+          <div class="form-group">
+            <label>앱키 (KIS_MOCK_APP_KEY)</label>
+            <input type="password" id="KIS_MOCK_APP_KEY" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>앱시크릿 (KIS_MOCK_APP_SECRET)</label>
+            <input type="password" id="KIS_MOCK_APP_SECRET" placeholder="기존 값 유지 시 비워두세요"/>
+          </div>
+          <div class="form-group">
+            <label>계좌번호 (KIS_MOCK_ACCOUNT_NUMBER)
+              <span class="hint">8자리+상품코드 2자리</span>
+            </label>
+            <input type="password" id="KIS_MOCK_ACCOUNT_NUMBER" placeholder="예: 5012345601"/>
+          </div>
+          <p class="hint-block">
+            🔗 <a href="https://apiportal.koreainvestment.com" target="_blank" class="link">KIS API 포털</a>에서
+            <strong>모의투자</strong> 앱 발급
+          </p>
+        </div>
+
+      </div><!-- /kis-creds-grid -->
+
+      <button class="btn-save" onclick="saveSection('kis')">저장</button>
     </section>
+
 
     <!-- ── LLM 설정 ──────────────────────────────── -->
     <section id="tab-settings-llm" class="tab">
@@ -170,11 +245,19 @@
     <!-- ── 종목 관리 ──────────────────────────────── -->
     <section id="tab-settings-tickers" class="tab">
       <h1>종목 관리</h1>
-      <div class="form-card">
-        <div class="ticker-builder">
-          <div class="ticker-input-row">
-            <input type="text" id="new-ticker-code" placeholder="종목코드 (예: 005930 또는 AAPL)" style="flex:2"/>
-            <select id="new-ticker-exchange" style="flex:1">
+      <div class="tickers-layout">
+
+        <!-- ① 왼쪽: 종목 추가 입력 폼 -->
+        <div class="form-card ticker-add-card">
+          <div class="param-section-title">➕ 종목 추가</div>
+
+          <div class="form-group">
+            <label>종목코드</label>
+            <input type="text" id="new-ticker-code" placeholder="005930 또는 AAPL"/>
+          </div>
+          <div class="form-group">
+            <label>거래소</label>
+            <select id="new-ticker-exchange">
               <option value="KRX">KRX – 한국거래소</option>
               <option value="NAS">NAS – 나스닥</option>
               <option value="NYS">NYS – 뉴욕증권거래소</option>
@@ -185,21 +268,39 @@
               <option value="SZS">SZS – 심천증권거래소</option>
               <option value="FRA">FRA – 프랑크푸르트</option>
             </select>
-            <button class="btn-add" onclick="addTicker()">+ 추가</button>
           </div>
-          <div id="ticker-list" class="ticker-list"></div>
+          <div class="form-group">
+            <label>주문 수량 <span class="hint">0 = 글로벌 기본값</span></label>
+            <input type="number" id="new-ticker-qty" min="0" max="9999" placeholder="0" value="0"/>
+          </div>
+          <div class="form-group">
+            <label>전략 주기 <span class="hint">초, 0 = 글로벌 기본값</span></label>
+            <input type="number" id="new-ticker-interval" min="0" placeholder="0" value="0"/>
+          </div>
+          <button class="btn-add" style="width:100%;margin-bottom:0" onclick="addTicker()">+ 종목 추가</button>
+
+          <div class="param-section-title" style="margin-top:24px">🌐 글로벌 기본값</div>
+          <div class="form-group">
+            <label>글로벌 주문 수량 (ORDER_QUANTITY)</label>
+            <input type="number" id="ORDER_QUANTITY" min="1" max="1000" placeholder="1"/>
+          </div>
+          <div class="form-group">
+            <label>글로벌 전략 주기 (STRATEGY_INTERVAL_SECONDS) <span class="hint">초</span></label>
+            <input type="number" id="STRATEGY_INTERVAL_SECONDS" min="10" placeholder="3600"/>
+          </div>
+          <button class="btn-save" onclick="saveSection('tickers')">저장</button>
         </div>
 
-        <div class="form-group" style="margin-top:20px">
-          <label>종목당 주문 수량 (ORDER_QUANTITY)</label>
-          <input type="number" id="ORDER_QUANTITY" min="1" max="1000" placeholder="1"/>
+        <!-- ② 오른쪽: 종목 카드 리스트 (드래그 정렬) -->
+        <div class="ticker-list-panel">
+          <div class="ticker-list-header">
+            <span>등록 종목 <span id="ticker-count" class="ticker-count-badge">0</span></span>
+            <span class="hint" style="font-size:11px">☰ 드래그로 순서 변경</span>
+          </div>
+          <div id="ticker-list" class="ticker-card-list"></div>
         </div>
-        <div class="form-group">
-          <label>전략 루프 실행 주기 (STRATEGY_INTERVAL_SECONDS) <span class="hint">초, 권장 300 이상</span></label>
-          <input type="number" id="STRATEGY_INTERVAL_SECONDS" min="10" placeholder="300"/>
-        </div>
-        <button class="btn-save" onclick="saveSection('tickers')">저장</button>
-      </div>
+
+      </div><!-- /tickers-layout -->
     </section>
 
     <!-- ── 전략 파라미터 ──────────────────────────── -->
@@ -276,6 +377,60 @@
 
         <button class="btn-save" onclick="saveSection('strategy')">저장</button>
       </div>
+    </section>
+
+    <!-- ── 보유종목 ──────────────────────────────── -->
+    <section id="tab-holdings" class="tab">
+      <h1>보유종목</h1>
+      <div class="table-toolbar">
+        <button onclick="loadHoldings()">🔄 새로고침</button>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr>
+            <th>종목코드</th>
+            <th>종목명</th>
+            <th>거래소</th>
+            <th>보유수량</th>
+            <th>평균단가</th>
+            <th>현재가</th>
+            <th>평가손익</th>
+            <th>업데이트</th>
+          </tr>
+        </thead>
+        <tbody id="holdings-tbody">
+          <tr><td colspan="8" class="empty">보유종목 없음</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ── 거래내역 ──────────────────────────────── -->
+    <section id="tab-trades" class="tab">
+      <h1>거래내역</h1>
+      <div class="table-toolbar">
+        <button onclick="loadTrades()">🔄 새로고침</button>
+        <button onclick="clearTrades()" class="btn-danger">🗑 전체삭제</button>
+        <span id="trades-count" style="font-size:12px;color:var(--text-sub);margin-left:auto;"></span>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>일시</th>
+            <th>종목코드</th>
+            <th>종목명</th>
+            <th>거래소</th>
+            <th>구분</th>
+            <th>단가</th>
+            <th>수량</th>
+            <th>거래금액</th>
+            <th>모드</th>
+          </tr>
+        </thead>
+        <tbody id="trades-tbody">
+          <tr><td colspan="10" class="empty">거래내역 없음</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <!-- ── 로그 뷰어 ──────────────────────────────── -->
