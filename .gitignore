@@ -42,6 +42,8 @@ __pycache__/
 # 거래내역 / 보유종목 (로컬 런타임 데이터)
 logs/trades.json
 logs/holdings.json
+logs/notify_settings.json
+logs/holdings.json
 
 # ─────────────────────────────────────────────
 # 가상환경

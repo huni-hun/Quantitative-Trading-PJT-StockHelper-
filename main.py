@@ -8,6 +8,7 @@
     5. 전략 루프 무한 실행 – 장 운영시간에만 종목 순회, 장외엔 대기 (Ctrl-C로 중지).
 """
 
+import os
 import time
 from datetime import datetime, time as dtime
 
@@ -21,15 +22,79 @@ from src.strategy.trump_monitor import TrumpMonitor, TrumpSignalStore
 from utils.logger import get_logger
 from utils.error_handler import TradingBotError
 
-# 웹 대시보드 상태 업데이트 (web 서버가 같이 실행 중일 때만 동작)
+# ---------------------------------------------------------------------------
+# 웹 대시보드 상태 업데이트
+#   - 동일 프로세스(직접 실행)에서는 web.app 모듈을 직접 import하여 메모리 공유.
+#   - 서브프로세스(web/app.py가 main.py를 띄운 경우)에서는 HTTP API로 상태 보고.
+# ---------------------------------------------------------------------------
+_DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://127.0.0.1:5000")
+_IS_SUBPROCESS = os.getenv("STOCKHELPER_SUBPROCESS", "0") == "1"
+
 try:
-    from web.app import update_bot_signal, set_bot_running, _record_trade
-    _WEB_ENABLED = True
+    if _IS_SUBPROCESS:
+        raise ImportError("서브프로세스 모드 — HTTP 콜백 사용")
+    from web.app import update_bot_signal as _web_update_signal
+    from web.app import set_bot_running as _web_set_running
+    from web.app import _record_trade as _web_record_trade
+    from web.app import check_kill_switch as _web_check_kill
+    _WEB_MODE = "direct"
 except ImportError:
-    _WEB_ENABLED = False
-    def update_bot_signal(*a, **kw): pass
-    def set_bot_running(*a, **kw): pass
-    def _record_trade(*a, **kw): pass
+    _WEB_MODE = "http"
+    _web_update_signal = None
+    _web_set_running   = None
+    _web_record_trade  = None
+    _web_check_kill    = None
+
+
+def _http_post(path: str, payload: dict) -> bool:
+    """대시보드 HTTP API에 상태를 보고한다. 실패해도 봇 동작에는 영향 없음."""
+    try:
+        import requests as _req
+        _req.post(f"{_DASHBOARD_URL}{path}", json=payload, timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def update_bot_signal(ticker: str, sentiment: str, technical: str, decision: str, price: str):
+    if _WEB_MODE == "direct" and _web_update_signal:
+        _web_update_signal(ticker, sentiment, technical, decision, price)
+    else:
+        _http_post("/api/bot/signal", {
+            "ticker": ticker, "sentiment": sentiment,
+            "technical": technical, "decision": decision, "price": price,
+        })
+
+
+def set_bot_running(running: bool):
+    if _WEB_MODE == "direct" and _web_set_running:
+        _web_set_running(running)
+    else:
+        _http_post("/api/bot/running", {"running": running})
+
+
+def _record_trade(ticker: str, name: str, side: str, price: float, qty: int, exchange: str = "KRX"):
+    if _WEB_MODE == "direct" and _web_record_trade:
+        _web_record_trade(ticker, name, side, price, qty, exchange)
+    else:
+        _http_post("/api/bot/trade", {
+            "ticker": ticker, "name": name, "side": side,
+            "price": price, "qty": qty, "exchange": exchange,
+        })
+
+
+def check_kill_switch() -> tuple[bool, str]:
+    if _WEB_MODE == "direct" and _web_check_kill:
+        return _web_check_kill()
+    else:
+        try:
+            import requests as _req
+            r = _req.get(f"{_DASHBOARD_URL}/api/risk/status", timeout=3)
+            d = r.json()
+            return bool(d.get("kill_switch", False)), d.get("kill_reason", "")
+        except Exception:
+            return False, ""
+
 
 logger = get_logger(__name__)
 
@@ -139,6 +204,18 @@ def run_strategy_loop(
     )
 
     while True:
+        # ---- 킬 스위치 체크 (매 사이클 최우선 확인) ----
+        kill_active, kill_reason = check_kill_switch()
+        if kill_active:
+            logger.warning("🛑 킬 스위치 발동 — 전략 루프 정지. 사유: %s", kill_reason)
+            # 킬스위치가 해제될 때까지 60초마다 재확인
+            while True:
+                time.sleep(60)
+                kill_active, _ = check_kill_switch()
+                if not kill_active:
+                    logger.info("✅ 킬 스위치 해제 — 전략 루프 재개.")
+                    break
+
         # ---- 장 운영 시간 체크 ----
         if not _is_market_open(tickers):
             wait = _seconds_until_next_open(tickers)
@@ -196,7 +273,8 @@ def run_strategy_loop(
                     order_api.market_buy(t, quantity=qty)
                     _record_trade(
                         ticker=t.code, name=t.code,
-                        side="BUY", price=float(current_price) if str(current_price).replace('.','').isdigit() else 0,
+                        side="BUY",
+                        price=float(current_price) if str(current_price).replace('.', '').isdigit() else 0,
                         qty=qty, exchange=t.exchange,
                     )
                 elif decision == "SELL":
@@ -204,7 +282,8 @@ def run_strategy_loop(
                     order_api.market_sell(t, quantity=qty)
                     _record_trade(
                         ticker=t.code, name=t.code,
-                        side="SELL", price=float(current_price) if str(current_price).replace('.','').isdigit() else 0,
+                        side="SELL",
+                        price=float(current_price) if str(current_price).replace('.', '').isdigit() else 0,
                         qty=qty, exchange=t.exchange,
                     )
 
@@ -218,8 +297,6 @@ def run_strategy_loop(
             "전체 종목 순회 완료. %d초 후 다음 사이클 시작.",
             Settings.STRATEGY_INTERVAL_SECONDS,
         )
-        # 종목별 interval 중 가장 짧은 값을 기준으로 대기
-        # (0이면 글로벌 STRATEGY_INTERVAL_SECONDS 사용)
         intervals = [t.interval for t in tickers if t.interval > 0]
         sleep_sec = min(intervals) if intervals else Settings.STRATEGY_INTERVAL_SECONDS
         time.sleep(sleep_sec)
@@ -250,6 +327,7 @@ def main() -> None:
     # TrumpMonitor 백그라운드 스레드 시작
     trump_monitor = TrumpMonitor()
     trump_monitor.start()
+
     # 전략 루프 시작
     set_bot_running(True)
     try:

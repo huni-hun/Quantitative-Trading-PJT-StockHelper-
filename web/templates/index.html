@@ -4,8 +4,9 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>StockHelper 대시보드</title>
-  <link rel="stylesheet" href="/static/css/style.css"/>
+  <link rel="stylesheet" href="/static/css/style.css?v=240">
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -17,6 +18,9 @@
       <li class="active" data-tab="dashboard">🏠 대시보드</li>
       <li data-tab="holdings">📦 보유종목</li>
       <li data-tab="trades">📒 거래내역</li>
+      <li data-tab="analytics">📊 성과 분석</li>
+      <li data-tab="backtest">🔬 백테스팅</li>
+      <li data-tab="notify">🔔 알림 설정</li>
       <li data-tab="settings-kis">🔑 KIS API 설정</li>
       <li data-tab="settings-llm">🤖 LLM 설정</li>
       <li data-tab="settings-tickers">📋 종목 관리</li>
@@ -34,6 +38,72 @@
     <!-- ── 대시보드 ─────────────────────────────── -->
     <section id="tab-dashboard" class="tab active">
       <h1>대시보드</h1>
+
+      <!-- ══ 리스크 관리 배너 (항상 최상단 고정) ══ -->
+      <div id="risk-banner" class="risk-banner">
+
+        <!-- ① 봇 상태 + 킬스위치 표시기 -->
+        <div class="risk-section risk-section-status">
+          <div class="risk-section-label">봇 상태</div>
+          <div id="risk-kill-indicator" class="risk-kill-indicator risk-safe">
+            <span id="risk-kill-dot">●</span>
+            <span id="risk-kill-label">초기화 중...</span>
+          </div>
+          <div id="risk-kill-reason" class="risk-kill-reason" style="display:none"></div>
+        </div>
+
+        <div class="risk-divider"></div>
+
+        <!-- ② 오늘 손익 현황 -->
+        <div class="risk-section risk-section-pnl">
+          <div class="risk-section-label">오늘 손익</div>
+          <div class="risk-pnl-row">
+            <span id="risk-daily-pnl" class="risk-pnl-value">--</span>
+            <span class="risk-pnl-sep">/</span>
+            <span class="risk-pnl-label-sm">한도</span>
+            <span id="risk-limit-value" class="risk-pnl-limit">비활성화</span>
+          </div>
+        </div>
+
+        <div class="risk-divider"></div>
+
+        <!-- ③ 일일 손실 한도 설정 -->
+        <div class="risk-section risk-section-limit">
+          <div class="risk-section-label">일일 손실 한도 설정</div>
+          <div class="risk-limit-row">
+            <input type="number" id="risk-limit-input" class="risk-limit-input"
+                   value="-5" min="-50" max="0" step="0.5" placeholder="-5.0"/>
+            <span class="risk-limit-unit">%</span>
+            <button class="risk-limit-btn" onclick="setDailyLossLimit()">설정</button>
+            <button class="risk-limit-btn risk-limit-reset" onclick="resetDailyEquity()" title="오늘 기준 자산 재설정">🔄 기준 재설정</button>
+          </div>
+        </div>
+
+        <div class="risk-divider"></div>
+
+        <!-- ④ 봇 ON/OFF 토글 -->
+        <div class="risk-section risk-section-btns">
+          <div class="risk-section-label">봇 제어</div>
+          <div class="risk-btn-group">
+            <button id="bot-start-btn" class="risk-btn risk-btn-start" onclick="startBot()">▶ 봇 시작</button>
+            <button id="bot-stop-btn"  class="risk-btn risk-btn-stop"  onclick="stopBot()" style="display:none">⏹ 봇 종료</button>
+          </div>
+        </div>
+
+        <div class="risk-divider"></div>
+
+        <!-- ⑤ 긴급 제어 -->
+        <div class="risk-section risk-section-btns">
+          <div class="risk-section-label">긴급 제어</div>
+          <div class="risk-btn-group">
+            <button id="risk-kill-btn"   class="risk-btn risk-btn-kill"   onclick="triggerKillSwitch()">⏹ 봇 정지</button>
+            <button id="risk-panic-btn"  class="risk-btn risk-btn-panic"  onclick="triggerPanicSell()">🚨 패닉 셀</button>
+            <button id="risk-resume-btn" class="risk-btn risk-btn-resume" onclick="resumeBot()" style="display:none">▶ 봇 재개</button>
+          </div>
+        </div>
+
+      </div>
+      <!-- ══ /리스크 관리 배너 ══ -->
 
       <!-- 상태 카드 -->
       <div class="card-row">
@@ -395,11 +465,15 @@
             <th>평균단가</th>
             <th>현재가</th>
             <th>평가손익</th>
+            <th>PER</th>
+            <th>PBR</th>
+            <th>PSR</th>
+            <th>ROE</th>
             <th>업데이트</th>
           </tr>
         </thead>
         <tbody id="holdings-tbody">
-          <tr><td colspan="8" class="empty">보유종목 없음</td></tr>
+          <tr><td colspan="12" class="empty">보유종목 없음</td></tr>
         </tbody>
       </table>
     </section>
@@ -431,6 +505,408 @@
           <tr><td colspan="10" class="empty">거래내역 없음</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <!-- ── 성과 분석 ──────────────────────────────── -->
+    <section id="tab-analytics" class="tab">
+      <h1>성과 분석</h1>
+
+      <div class="analytics-toolbar">
+        <button onclick="loadAnalytics()">🔄 새로고침</button>
+        <span id="analytics-range" class="analytics-range-label"></span>
+      </div>
+
+      <!-- 핵심 지표 카드 행 -->
+      <div class="analytics-kpi-row" id="analytics-kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">총 거래 수</div>
+          <div class="kpi-value" id="kpi-total">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">승률</div>
+          <div class="kpi-value" id="kpi-winrate">--</div>
+          <div class="kpi-sub" id="kpi-wl">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">손익비 (Profit Factor)</div>
+          <div class="kpi-value" id="kpi-pf">--</div>
+          <div class="kpi-sub" id="kpi-avgwl">--</div>
+        </div>
+        <div class="kpi-card kpi-mdd">
+          <div class="kpi-label">최대 낙폭 (MDD)</div>
+          <div class="kpi-value" id="kpi-mdd">--</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">누적 실현 손익</div>
+          <div class="kpi-value" id="kpi-pnl">--</div>
+          <div class="kpi-sub" id="kpi-bestworse">--</div>
+        </div>
+      </div>
+
+      <!-- 에쿼티 커브 -->
+      <div class="analytics-section-title">📈 누적 손익 커브 (Equity Curve)</div>
+      <div class="analytics-chart-box">
+        <canvas id="equity-chart"></canvas>
+        <div id="equity-empty" class="analytics-empty" style="display:none">
+          체결된 매도 거래가 없으면 에쿼티 커브를 그릴 수 없습니다.
+        </div>
+      </div>
+
+      <!-- 월별 히트맵 -->
+      <div class="analytics-section-title">🗓 월별 손익 히트맵</div>
+      <div class="analytics-heatmap-wrap">
+        <div id="heatmap-legend" class="heatmap-legend">
+          <span class="hm-loss-deep">큰손실</span>
+          <span class="hm-loss">손실</span>
+          <span class="hm-zero">없음</span>
+          <span class="hm-win">수익</span>
+          <span class="hm-win-deep">큰수익</span>
+        </div>
+        <div id="heatmap-container" class="heatmap-container">
+          <p class="analytics-empty">데이터를 불러오는 중...</p>
+        </div>
+      </div>
+
+      <!-- 종목별 성과 -->
+      <div class="analytics-section-title">🏷 종목별 성과</div>
+      <table class="signal-table" id="ticker-stats-table">
+        <thead>
+          <tr>
+            <th>종목</th>
+            <th>종목명</th>
+            <th>거래 수</th>
+            <th>승/패</th>
+            <th>승률</th>
+            <th>누적 손익</th>
+          </tr>
+        </thead>
+        <tbody id="ticker-stats-tbody">
+          <tr><td colspan="6" class="empty">데이터 없음</td></tr>
+        </tbody>
+      </table>
+
+    </section>
+
+    <!-- ── 백테스팅 ────────────────────────────────── -->
+    <section id="tab-backtest" class="tab">
+      <h1>백테스팅 & 시뮬레이션</h1>
+
+      <div class="bt-layout">
+
+        <!-- ① 왼쪽: 파라미터 입력 패널 -->
+        <div class="bt-param-panel">
+
+          <!-- 기본 설정 -->
+          <div class="form-card bt-card">
+            <div class="param-section-title">📌 기본 설정</div>
+
+            <!-- 종목코드 + 거래소 한 줄 -->
+            <div class="bt-ticker-row">
+              <div class="form-group" style="flex:1">
+                <label>종목코드</label>
+                <input type="text" id="bt-ticker" placeholder="005930 또는 AAPL" />
+              </div>
+              <div class="form-group" style="flex:0 0 130px">
+                <label>거래소</label>
+                <div class="bt-select-wrap">
+                  <select id="bt-exchange" class="bt-select">
+                    <option value="KRX">🇰🇷 KRX</option>
+                    <option value="NAS">🇺🇸 NAS</option>
+                    <option value="NYS">🇺🇸 NYS</option>
+                    <option value="AMS">🇺🇸 AMS</option>
+                    <option value="TSE">🇯🇵 TSE</option>
+                    <option value="HKS">🇭🇰 HKS</option>
+                  </select>
+                  <span class="bt-select-arrow">▾</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 날짜 범위 -->
+            <div class="form-group">
+              <label>기간
+                <span class="bt-date-presets">
+                  <button type="button" onclick="btSetDateRange(1,'M')">1개월</button>
+                  <button type="button" onclick="btSetDateRange(3,'M')">3개월</button>
+                  <button type="button" onclick="btSetDateRange(6,'M')">6개월</button>
+                  <button type="button" onclick="btSetDateRange(1,'Y')">1년</button>
+                  <button type="button" onclick="btSetDateRange(3,'Y')">3년</button>
+                </span>
+              </label>
+              <div class="bt-date-range-wrap">
+                <div class="bt-date-field">
+                  <span class="bt-date-icon">📅</span>
+                  <input type="date" id="bt-start" class="bt-date-input"/>
+                  <span class="bt-date-label">시작</span>
+                </div>
+                <span class="bt-date-arrow">→</span>
+                <div class="bt-date-field">
+                  <span class="bt-date-icon">📅</span>
+                  <input type="date" id="bt-end" class="bt-date-input"/>
+                  <span class="bt-date-label">종료</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 자본 + 수량 -->
+            <div class="bt-date-row">
+              <div class="form-group">
+                <label>초기 자본 (원)</label>
+                <input type="number" id="bt-cash" value="10000000" min="1" />
+              </div>
+              <div class="form-group">
+                <label>1회 주문 수량 (주)</label>
+                <input type="number" id="bt-qty" value="1" min="1" />
+              </div>
+            </div>
+          </div>
+
+          <!-- 파라미터 A -->
+          <div class="form-card bt-card bt-param-a">
+            <div class="param-section-title">🅐 파라미터 세트 A
+              <button class="bt-load-current" onclick="btLoadCurrent('a')" title="현재 전략 설정 불러오기">⬇ 현재 설정 불러오기</button>
+            </div>
+            <div class="bt-param-grid">
+              <div class="form-group"><label>RSI 기간</label><input type="number" id="bt-a-rsi-period" value="14" min="2"/></div>
+              <div class="form-group"><label>과매도 기준</label><input type="number" id="bt-a-rsi-oversold" value="30" min="1" max="49"/></div>
+              <div class="form-group"><label>과매수 기준</label><input type="number" id="bt-a-rsi-overbought" value="70" min="51" max="99"/></div>
+              <div class="form-group"><label>BB 기간</label><input type="number" id="bt-a-bb-period" value="20" min="5"/></div>
+              <div class="form-group"><label>BB 표준편차</label><input type="number" id="bt-a-bb-std" value="2.0" step="0.1" min="0.5"/></div>
+            </div>
+          </div>
+
+          <!-- 파라미터 B (비교용) -->
+          <div class="form-card bt-card bt-param-b">
+            <div class="param-section-title">🅑 파라미터 세트 B
+              <span class="hint">비워두면 단일 실행</span>
+              <label class="bt-compare-toggle">
+                <input type="checkbox" id="bt-use-b" onchange="btToggleB(this.checked)"/> 비교 활성화
+              </label>
+            </div>
+            <div id="bt-b-fields" style="opacity:.35;pointer-events:none">
+              <div class="bt-param-grid">
+                <div class="form-group"><label>RSI 기간</label><input type="number" id="bt-b-rsi-period" value="14" min="2"/></div>
+                <div class="form-group"><label>과매도 기준</label><input type="number" id="bt-b-rsi-oversold" value="25" min="1" max="49"/></div>
+                <div class="form-group"><label>과매수 기준</label><input type="number" id="bt-b-rsi-overbought" value="75" min="51" max="99"/></div>
+                <div class="form-group"><label>BB 기간</label><input type="number" id="bt-b-bb-period" value="20" min="5"/></div>
+                <div class="form-group"><label>BB 표준편차</label><input type="number" id="bt-b-bb-std" value="2.0" step="0.1" min="0.5"/></div>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn-save" id="bt-run-btn" style="width:100%" onclick="runBacktest()">
+            ▶ 백테스트 실행
+          </button>
+          <div id="bt-status" class="bt-status"></div>
+        </div>
+
+        <!-- ② 오른쪽: 결과 패널 -->
+        <div class="bt-result-panel" id="bt-result-panel">
+
+          <!-- 빈 상태 -->
+          <div id="bt-empty" class="bt-empty-state">
+            <div class="bt-empty-icon">🔬</div>
+            <p>파라미터를 입력하고 <strong>백테스트 실행</strong>을 누르세요.</p>
+            <p class="hint" style="margin-top:6px">KIS API로 과거 OHLCV를 조회하므로 인증 정보가 필요합니다.</p>
+          </div>
+
+          <!-- 결과 영역 (hidden until run) -->
+          <div id="bt-result-inner" style="display:none">
+
+            <!-- OHLCV 범위 정보 -->
+            <div id="bt-range-bar" class="bt-range-bar"></div>
+
+            <!-- KPI 비교 카드 -->
+            <div id="bt-kpi-wrap" class="bt-kpi-wrap"></div>
+
+            <!-- 에쿼티 커브 차트 -->
+            <div class="analytics-section-title">📈 누적 수익 커브</div>
+            <div class="bt-chart-box">
+              <canvas id="bt-equity-chart"></canvas>
+            </div>
+
+            <!-- RSI 오버레이 차트 -->
+            <div class="analytics-section-title" style="margin-top:20px">📉 RSI 추이 (세트 A)</div>
+            <div class="bt-chart-box" style="height:160px">
+              <canvas id="bt-rsi-chart"></canvas>
+            </div>
+
+            <!-- 체결 내역 -->
+            <div class="analytics-section-title">📋 체결 내역 (세트 A · 최근 100건)</div>
+            <table class="signal-table" id="bt-trades-table">
+              <thead>
+                <tr>
+                  <th>날짜</th><th>구분</th><th>가격</th><th>수량</th><th>손익</th>
+                </tr>
+              </thead>
+              <tbody id="bt-trades-tbody">
+                <tr><td colspan="5" class="empty">데이터 없음</td></tr>
+              </tbody>
+            </table>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 알림 설정 ──────────────────────────────── -->
+    <section id="tab-notify" class="tab">
+      <h1>알림 설정</h1>
+
+      <div class="notify-layout">
+
+        <!-- ① 텔레그램 연결 카드 -->
+        <div class="form-card notify-card">
+          <div class="param-section-title">
+            <span>📱 텔레그램 연결</span>
+            <a class="notify-guide-link" href="https://core.telegram.org/bots#botfather" target="_blank">봇 만들기 가이드 →</a>
+          </div>
+
+          <!-- 전체 알림 ON/OFF 마스터 토글 -->
+          <div class="notify-master-row">
+            <span class="notify-master-label">텔레그램 알림</span>
+            <label class="toggle notify-master-toggle">
+              <input type="checkbox" id="notify-telegram-enabled" onchange="notifyToggleMaster(this.checked)"/>
+              <span class="slider"></span>
+            </label>
+            <span id="notify-master-status" class="notify-status-text off">비활성화</span>
+          </div>
+
+          <div id="notify-telegram-fields">
+            <div class="form-group">
+              <label>봇 토큰 <span class="hint">BotFather에서 발급</span></label>
+              <input type="password" id="notify-bot-token" placeholder="기존 값 유지 시 비워두세요 (저장된 경우 ****로 표시)"/>
+            </div>
+            <div class="form-group">
+              <label>Chat ID <span class="hint">텔레그램 채팅방 ID</span></label>
+              <input type="text" id="notify-chat-id" placeholder="예: 123456789 또는 -100xxxxxxxx"/>
+              <p class="hint-block">
+                💡 Chat ID 확인법: 봇에 아무 메시지 전송 후<br>
+                <code>https://api.telegram.org/bot<b>토큰</b>/getUpdates</code> 에서 <code>chat.id</code> 확인
+              </p>
+            </div>
+
+            <div class="notify-btn-row">
+              <button class="btn-save" onclick="saveNotifySettings()">💾 저장</button>
+              <button class="btn-notify-test" onclick="testNotify()">📨 테스트 전송</button>
+            </div>
+            <div id="notify-test-result" class="notify-test-result"></div>
+          </div>
+        </div>
+
+        <!-- ② 알림 레벨 설정 카드 -->
+        <div class="form-card notify-card">
+          <div class="param-section-title">🎚 알림 레벨 설정</div>
+          <p style="font-size:12px;color:var(--text-sub);margin-bottom:16px">
+            각 이벤트별로 알림을 받을지 선택합니다. 마스터 토글이 꺼져 있으면 모든 알림이 차단됩니다.
+          </p>
+
+          <div class="notify-level-list">
+
+            <div class="notify-level-item notify-level-critical">
+              <div class="notify-level-icon">📈</div>
+              <div class="notify-level-body">
+                <div class="notify-level-title">매수 / 매도 체결</div>
+                <div class="notify-level-desc">봇이 실제 주문을 실행했을 때 즉시 알림</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="notify-trade" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="notify-level-item">
+              <div class="notify-level-icon">🇺🇸</div>
+              <div class="notify-level-body">
+                <div class="notify-level-title">트럼프 시그널 변경</div>
+                <div class="notify-level-desc">NEUTRAL → BULLISH / BEARISH 전환 시 알림</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="notify-trump" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="notify-level-item notify-level-critical">
+              <div class="notify-level-icon">🚨</div>
+              <div class="notify-level-body">
+                <div class="notify-level-title">ERROR 로그 발생</div>
+                <div class="notify-level-desc">봇에서 ERROR 수준 로그가 발생했을 때 긴급 알림</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="notify-error" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="notify-level-item">
+              <div class="notify-level-icon">🔔</div>
+              <div class="notify-level-body">
+                <div class="notify-level-title">장 시작 / 종료</div>
+                <div class="notify-level-desc">국내·해외 장이 열리고 닫힐 때 알림</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="notify-market_open" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="notify-level-item">
+              <div class="notify-level-icon">📊</div>
+              <div class="notify-level-body">
+                <div class="notify-level-title">일일 성과 요약</div>
+                <div class="notify-level-desc">매일 자정 직전 당일 거래 결과 요약 전송</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="notify-daily_summary" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+          </div><!-- /notify-level-list -->
+
+          <button class="btn-save" style="margin-top:20px" onclick="saveNotifySettings()">💾 알림 설정 저장</button>
+        </div>
+
+        <!-- ③ 알림 메시지 형식 미리보기 -->
+        <div class="form-card notify-card notify-preview-card">
+          <div class="param-section-title">👁 메시지 형식 미리보기</div>
+          <div class="notify-preview-list">
+
+            <div class="notify-preview-item">
+              <div class="notify-preview-label">📈 매수 체결</div>
+              <div class="notify-preview-msg">
+                📈 <b>[매수] 삼성전자(005930)</b><br>
+                거래소: KRX | 모의투자<br>
+                단가: 75,400 × 3주<br>
+                거래금액: 226,200<br>
+                🕐 2026-04-01 09:32:15
+              </div>
+            </div>
+
+            <div class="notify-preview-item">
+              <div class="notify-preview-label">🇺🇸 트럼프 시그널</div>
+              <div class="notify-preview-msg">
+                🇺🇸 <b>트럼프 시그널 변경</b><br>
+                NEUTRAL → BEARISH (score: -0.72)<br>
+                내용: 중국산 제품에 145% 관세 부과 발표<br>
+                🕐 2026-04-01 14:05:33
+              </div>
+            </div>
+
+            <div class="notify-preview-item">
+              <div class="notify-preview-label">🚨 ERROR 로그</div>
+              <div class="notify-preview-msg">
+                🚨 <b>[ERROR] StockHelper 봇 오류</b><br>
+                KIS API 인증 토큰 만료<br>
+                🕐 2026-04-01 10:15:00
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div><!-- /notify-layout -->
     </section>
 
     <!-- ── 로그 뷰어 ──────────────────────────────── -->

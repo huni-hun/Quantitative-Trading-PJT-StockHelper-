@@ -83,16 +83,23 @@ class PriceAPI:
         return response.json()
 
     def _get_domestic_ohlcv(self, ticker: str, lookback_days: int) -> pd.DataFrame:
-        """국내 종목의 일봉 OHLCV를 조회한다."""
+        """국내 종목의 일봉 OHLCV를 조회한다.
+
+        KIS API는 1회 호출당 최대 ~100일치를 반환하므로
+        lookback_days 를 충족할 때까지 start_date 를 앞당기며 반복 호출한다.
+        """
         url = f"{self._base_url}{self.DOMESTIC_OHLCV_PATH}"
         tr_id = "FHKST03010100"
 
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=int(lookback_days * 1.7))
+        end_date   = datetime.today()
+        # 달력 일수 기준으로 시작일 계산 (주말·공휴일 포함해 1.5배 여유)
+        start_date = end_date - timedelta(days=int(lookback_days * 1.5))
         all_rows: list[dict] = []
         current_end = end_date
 
-        for _ in range(3):
+        # 필요 거래일을 모두 채울 때까지 반복 (최대 20회 = 약 2,000거래일)
+        max_iter = max(20, lookback_days // 80 + 2)
+        for _ in range(max_iter):
             headers = self._auth.get_headers()
             headers["tr_id"] = tr_id
             params = {
@@ -109,11 +116,12 @@ class PriceAPI:
                 data = response.json()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[국내] OHLCV 조회 실패 | %s: %s", ticker, exc)
-                return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+                break
 
+            batch = []
             for item in data.get("output2", []):
                 try:
-                    all_rows.append({
+                    batch.append({
                         "date":   item["stck_bsop_date"],
                         "open":   int(item["stck_oprc"]),
                         "high":   int(item["stck_hgpr"]),
@@ -124,9 +132,16 @@ class PriceAPI:
                 except (KeyError, ValueError):
                     continue
 
-            if len(all_rows) >= lookback_days or not all_rows:
+            if not batch:
+                break  # 더 이상 데이터 없음
+
+            all_rows.extend(batch)
+
+            # 목표치 달성 시 종료
+            if len(all_rows) >= lookback_days:
                 break
 
+            # 가장 오래된 날짜보다 하루 앞으로 이동해 다음 배치 요청
             oldest = min(r["date"] for r in all_rows)
             current_end = datetime.strptime(oldest, "%Y%m%d") - timedelta(days=1)
             if current_end < start_date:
@@ -164,48 +179,59 @@ class PriceAPI:
     def _get_overseas_ohlcv(self, ticker: str, exchange: str, lookback_days: int) -> pd.DataFrame:
         """해외 종목의 일봉 OHLCV를 조회한다.
 
-        Args:
-            ticker:        해외 종목 티커.
-            exchange:      KIS 거래소 코드.
-            lookback_days: 조회할 과거 거래일 수.
+        KIS 해외 API는 BYMD(기준일) 이전 최대 약 120일치를 반환하므로
+        lookback_days 를 충족할 때까지 BYMD 를 앞당기며 반복 호출한다.
         """
         url = f"{self._base_url}{self.OVERSEAS_OHLCV_PATH}"
-        headers = self._auth.get_headers()
-        headers["tr_id"] = "HHDFS76240000"
-
-        end_date = datetime.today()
         all_rows: list[dict] = []
+        current_end = datetime.today()
 
-        # 해외 API는 기간 지정 없이 최근 N건을 반환하므로 한 번만 호출
-        params = {
-            "AUTH": "",
-            "EXCD": exchange,
-            "SYMB": ticker,
-            "GUBN": "0",    # 0=일봉
-            "BYMD": end_date.strftime("%Y%m%d"),
-            "MODP": "1",    # 수정주가
-        }
+        max_iter = max(20, lookback_days // 100 + 2)
+        for _ in range(max_iter):
+            headers = self._auth.get_headers()
+            headers["tr_id"] = "HHDFS76240000"
 
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            handle_api_error(response)
-            data = response.json()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[해외:%s] OHLCV 조회 실패 | %s: %s", exchange, ticker, exc)
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+            params = {
+                "AUTH": "",
+                "EXCD": exchange,
+                "SYMB": ticker,
+                "GUBN": "0",    # 0=일봉
+                "BYMD": current_end.strftime("%Y%m%d"),
+                "MODP": "1",    # 수정주가
+            }
 
-        for item in data.get("output2", []):
             try:
-                all_rows.append({
-                    "date":   item["xymd"],               # YYYYMMDD
-                    "open":   float(item["open"]),
-                    "high":   float(item["high"]),
-                    "low":    float(item["low"]),
-                    "close":  float(item["clos"]),
-                    "volume": int(item["tvol"]),
-                })
-            except (KeyError, ValueError):
-                continue
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                handle_api_error(response)
+                data = response.json()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[해외:%s] OHLCV 조회 실패 | %s: %s", exchange, ticker, exc)
+                break
+
+            batch = []
+            for item in data.get("output2", []):
+                try:
+                    batch.append({
+                        "date":   item["xymd"],
+                        "open":   float(item["open"]),
+                        "high":   float(item["high"]),
+                        "low":    float(item["low"]),
+                        "close":  float(item["clos"]),
+                        "volume": int(item["tvol"]),
+                    })
+                except (KeyError, ValueError):
+                    continue
+
+            if not batch:
+                break
+
+            all_rows.extend(batch)
+
+            if len(all_rows) >= lookback_days:
+                break
+
+            oldest = min(r["date"] for r in all_rows)
+            current_end = datetime.strptime(oldest, "%Y%m%d") - timedelta(days=1)
 
         return self._to_dataframe(all_rows, ticker, lookback_days)
 

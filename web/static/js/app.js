@@ -8,8 +8,11 @@ document.querySelectorAll('.sidebar-menu li').forEach(li => {
     document.getElementById(`tab-${li.dataset.tab}`).classList.add('active');
     // 탭별 데이터 자동 로드
     const tab = li.dataset.tab;
-    if (tab === 'holdings') loadHoldings();
-    if (tab === 'trades')   loadTrades();
+    if (tab === 'holdings')  loadHoldings();
+    if (tab === 'trades')    loadTrades();
+    if (tab === 'analytics') loadAnalytics();
+    if (tab === 'backtest')  btInitDates();
+    if (tab === 'notify')    loadNotifySettings();
   });
 });
 
@@ -46,6 +49,9 @@ function refreshDashboard() {
       const badge = document.getElementById('bot-status-badge');
       badge.textContent = running ? '● 봇 실행 중' : '● 봇 중지됨';
       badge.className = `badge ${running ? 'badge-running' : 'badge-stopped'}`;
+
+      // ── 리스크 배너 업데이트 ────────────────────────────────────
+      updateRiskBanner(d);
 
       // 트럼프 시그널
       const ts = d.trump_signal || 'NEUTRAL';
@@ -104,6 +110,252 @@ function refreshDashboard() {
 
 refreshDashboard();
 setInterval(refreshDashboard, 5000);
+
+// ══════════════════════════════════════════════════════════════════════
+// 리스크 관리 (킬 스위치 / 일일 손실 한도)
+// ══════════════════════════════════════════════════════════════════════
+
+/* 리스크 배너 상태 반영 */
+function updateRiskBanner(d) {
+  const botRunning  = !!d.bot_running;
+  const killActive  = !!d.kill_switch;
+  const killReason  = d.kill_reason  || '';
+  const pnlPct      = d.daily_pnl_pct != null ? Number(d.daily_pnl_pct) : null;
+  const limitPct    = d.daily_loss_limit != null ? Number(d.daily_loss_limit) : 0;
+
+  // ── 상태 표시기 ──────────────────────────────────────────────────
+  // 3가지 상태 구분:
+  //   kill_switch=true           → 🛑 킬스위치 발동 (최우선)
+  //   bot_running=false (정상종료) → ⏸ 봇 중지됨
+  //   bot_running=true            → ● 봇 정상 작동
+  const indicator = document.getElementById('risk-kill-indicator');
+  const label     = document.getElementById('risk-kill-label');
+  const reasonEl  = document.getElementById('risk-kill-reason');
+
+  if (indicator && label) {
+    if (killActive) {
+      indicator.className = 'risk-kill-indicator risk-active';
+      label.textContent   = '🛑 킬스위치 발동';
+      if (reasonEl) {
+        reasonEl.textContent = killReason || '';
+        reasonEl.style.display = killReason ? '' : 'none';
+      }
+    } else if (!botRunning) {
+      indicator.className = 'risk-kill-indicator risk-stopped';
+      label.textContent   = '⏸ 봇 중지됨';
+      if (reasonEl) reasonEl.style.display = 'none';
+    } else {
+      indicator.className = 'risk-kill-indicator risk-safe';
+      label.textContent   = '● 봇 정상 작동';
+      if (reasonEl) reasonEl.style.display = 'none';
+    }
+  }
+
+  // ── 버튼 토글 ────────────────────────────────────────────────────
+  const killBtn   = document.getElementById('risk-kill-btn');
+  const panicBtn  = document.getElementById('risk-panic-btn');
+  const resumeBtn = document.getElementById('risk-resume-btn');
+  if (killBtn)   killBtn.style.display   = killActive ? 'none' : '';
+  if (panicBtn)  panicBtn.style.display  = killActive ? 'none' : '';
+  if (resumeBtn) resumeBtn.style.display = killActive ? ''     : 'none';
+
+  // ── 봇 시작/중지 버튼 토글 ───────────────────────────────────────
+  const startBtn = document.getElementById('bot-start-btn');
+  const stopBtn  = document.getElementById('bot-stop-btn');
+  if (startBtn && stopBtn) {
+    if (botRunning) {
+      startBtn.style.display = 'none';
+      stopBtn.style.display  = '';
+    } else {
+      startBtn.style.display = '';
+      stopBtn.style.display  = 'none';
+    }
+  }
+
+  // ── 오늘 손익 ────────────────────────────────────────────────────
+  const pnlEl = document.getElementById('risk-daily-pnl');
+  if (pnlEl) {
+    if (pnlPct != null) {
+      const sign = pnlPct > 0 ? '+' : '';
+      pnlEl.textContent = `${sign}${pnlPct.toFixed(2)}%`;
+      pnlEl.className   = `risk-pnl-value ${pnlPct >= 0 ? 'pnl-pos' : 'pnl-neg'}`;
+    } else {
+      pnlEl.textContent = '--';
+      pnlEl.className   = 'risk-pnl-value';
+    }
+  }
+
+  // ── 한도 표시 ────────────────────────────────────────────────────
+  const limitEl = document.getElementById('risk-limit-value');
+  if (limitEl) {
+    limitEl.textContent = limitPct === 0 ? '비활성화' : `${limitPct}%`;
+    limitEl.className   = `risk-pnl-limit ${limitPct !== 0 ? 'limit-set' : ''}`;
+  }
+
+  // ── 배너 경고 스타일 (킬스위치 발동 시만) ────────────────────────
+  const banner = document.getElementById('risk-banner');
+  if (banner) {
+    banner.classList.toggle('risk-banner-alert', killActive);
+  }
+}
+
+/* 봇 정지 (킬 스위치만 발동, 청산 없음) */
+function triggerKillSwitch() {
+  if (!confirm('봇을 즉시 정지합니다.\n보유 종목은 그대로 유지됩니다. 계속하시겠습니까?')) return;
+  fetch('/api/risk/kill-switch', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activate: true, panic_sell: false, reason: '수동 킬 스위치' }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) showToast('⏹ 봇이 정지되었습니다.', 'error');
+      else       showToast(d.message, 'error');
+    })
+    .catch(() => showToast('서버 오류', 'error'));
+}
+
+/* 패닉 셀 — 봇 정지 + 전 종목 시장가 청산 */
+function triggerPanicSell() {
+  if (!confirm(
+    '🚨 패닉 셀 — 봇을 정지하고 보유 중인 모든 종목을 시장가로 즉시 매도합니다.\n\n이 작업은 되돌릴 수 없습니다. 정말 실행하시겠습니까?'
+  )) return;
+
+  const btn = document.getElementById('risk-panic-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 청산 중...'; }
+
+  fetch('/api/risk/kill-switch', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activate: true, panic_sell: true, reason: '패닉 셀 (수동)' }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        const sold = (d.sell_results || []).filter(r => r.ok).length;
+        const fail = (d.sell_results || []).filter(r => !r.ok).length;
+        showToast(
+          `🚨 패닉 셀 완료: ${sold}종목 청산${fail ? ` (${fail}건 실패)` : ''}`,
+          fail ? 'error' : 'success'
+        );
+      } else {
+        showToast(d.message, 'error');
+      }
+    })
+    .catch(() => showToast('서버 오류', 'error'))
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '🚨 패닉 셀'; }
+    });
+}
+
+/* 봇 재개 (킬 스위치 해제) */
+function resumeBot() {
+  if (!confirm('킬 스위치를 해제하고 봇을 재개합니다. 계속하시겠습니까?')) return;
+  fetch('/api/risk/kill-switch', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activate: false }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) showToast('✅ 봇이 재개됩니다.');
+      else       showToast(d.message, 'error');
+    })
+    .catch(() => showToast('서버 오류', 'error'));
+}
+
+/* 일일 손실 한도 설정 */
+function setDailyLossLimit() {
+  const val = parseFloat(document.getElementById('risk-limit-input')?.value);
+  if (isNaN(val)) { showToast('올바른 숫자를 입력하세요.', 'error'); return; }
+  const limitPct = val > 0 ? -val : val;   // 항상 음수
+  fetch('/api/risk/daily-loss-limit', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit_pct: limitPct }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) showToast(`✅ 일일 손실 한도: ${limitPct === 0 ? '비활성화' : limitPct + '%'}`);
+      else       showToast(d.message, 'error');
+    })
+    .catch(() => showToast('서버 오류', 'error'));
+}
+
+/* 오늘 기준 자산 재설정 */
+function resetDailyEquity() {
+  if (!confirm('오늘의 기준 자산을 현재 보유 평가금액으로 재설정합니다.\n이전 손익 기록이 초기화됩니다. 계속하시겠습니까?')) return;
+  const val = parseFloat(document.getElementById('risk-limit-input')?.value) || -5;
+  fetch('/api/risk/daily-loss-limit', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit_pct: val > 0 ? -val : val, reset_daily_equity: true }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) showToast('🔄 기준 자산이 현재 평가금액으로 재설정되었습니다.');
+      else       showToast(d.message, 'error');
+    })
+    .catch(() => showToast('서버 오류', 'error'));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 봇 시작 / 중지 (서브프로세스 제어)
+// ══════════════════════════════════════════════════════════════════════
+
+/* 봇 시작 */
+function startBot() {
+  const btn = document.getElementById('bot-start-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 시작 중...'; }
+
+  fetch('/api/bot/start', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        showToast(`✅ ${d.message}`);
+        // 상태 즉시 반영
+        refreshDashboard();
+      } else {
+        showToast(d.message || '봇 시작 실패', 'error');
+      }
+    })
+    .catch(() => showToast('서버 오류: 봇 시작 실패', 'error'))
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '▶ 봇 시작'; }
+    });
+}
+
+/* 봇 중지 */
+function stopBot() {
+  if (!confirm('거래봇을 종료합니다.\n보유 종목은 그대로 유지됩니다. 계속하시겠습니까?')) return;
+
+  const btn = document.getElementById('bot-stop-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 종료 중...'; }
+
+  fetch('/api/bot/stop', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: false }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        showToast('⏹ ' + d.message);
+        refreshDashboard();
+      } else {
+        showToast(d.message || '봇 종료 실패', 'error');
+      }
+    })
+    .catch(() => showToast('서버 오류: 봇 종료 실패', 'error'))
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '⏹ 봇 종료'; }
+    });
+}
+
 
 // ── 마켓 뉴스 폴링 ───────────────────────────────────────────────────
 
@@ -272,11 +524,12 @@ function updateKisModeUI(isMock) {
 // ── 종목명 캐시 & 조회 ───────────────────────────────────────────────
 
 const _nameCache = {};   // {code: "삼성전자"}
+const _fundCache = {};   // {code: {per, pbr, psr, roe}}
 
 function fetchTickerNames(tickers) {
   // 캐시에 없는 것만 서버에 요청
   const missing = tickers.filter(t => !_nameCache[t.code]);
-  if (missing.length === 0) { renderTickers(); return; }
+  if (missing.length === 0) { renderTickers(); fetchFundamentals(tickers); return; }
 
   fetch('/api/ticker-names', {
     method: 'POST',
@@ -287,8 +540,23 @@ function fetchTickerNames(tickers) {
     .then(d => {
       Object.assign(_nameCache, d);
       renderTickers();
+      fetchFundamentals(tickers);
     })
-    .catch(() => renderTickers());
+    .catch(() => { renderTickers(); fetchFundamentals(tickers); });
+}
+
+function fetchFundamentals(tickers) {
+  fetch('/api/fundamentals', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ tickers }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      Object.assign(_fundCache, d);
+      renderTickers();
+    })
+    .catch(() => {});
 }
 
 // ── 종목 관리 ─────────────────────────────────────────────────────────
@@ -305,6 +573,11 @@ function renderTickers() {
     const name = _nameCache[t.code] || '';
     const qtyLabel      = t.qty      > 0 ? `${t.qty}주` : '글로벌';
     const intervalLabel = t.interval > 0 ? `${t.interval}초` : '글로벌';
+    const fund = _fundCache[t.code] || {};
+    const per  = fund.per  || '…';
+    const pbr  = fund.pbr  || '…';
+    const psr  = fund.psr  || '…';
+    const roe  = fund.roe  || '…';
     return `
     <div class="ticker-card" data-idx="${i}">
       <div class="ticker-card-drag">☰</div>
@@ -317,6 +590,12 @@ function renderTickers() {
         <div class="ticker-card-meta">
           <span class="ticker-meta-item">📦 수량: <b>${qtyLabel}</b></span>
           <span class="ticker-meta-item">⏱ 주기: <b>${intervalLabel}</b></span>
+        </div>
+        <div class="ticker-card-fund">
+          <span class="fund-item">PER <b>${per}</b></span>
+          <span class="fund-item">PBR <b>${pbr}</b></span>
+          <span class="fund-item">PSR <b>${psr}</b></span>
+          <span class="fund-item">ROE <b>${roe}${roe !== '…' && roe !== '-' ? '%' : ''}</b></span>
         </div>
       </div>
       <div class="ticker-card-actions">
@@ -385,12 +664,13 @@ function loadHoldings() {
       const tbody = document.getElementById('holdings-tbody');
       if (!tbody) return;
       if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty">보유종목 없음</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" class="empty">보유종목 없음</td></tr>';
         return;
       }
       tbody.innerHTML = data.map(h => {
         const pnlClass = h.pnl_pct > 0 ? 'sig-buy' : h.pnl_pct < 0 ? 'sig-sell' : '';
         const pnlSign  = h.pnl_pct > 0 ? '+' : '';
+        const roe = h.roe && h.roe !== '-' ? `${h.roe}%` : (h.roe || '-');
         return `<tr>
           <td><strong>${h.ticker}</strong></td>
           <td>${h.name || '-'}</td>
@@ -399,6 +679,10 @@ function loadHoldings() {
           <td>${Number(h.avg_price).toLocaleString()}</td>
           <td>${Number(h.last_price).toLocaleString()}</td>
           <td><span class="${pnlClass}">${pnlSign}${h.pnl_pct}%</span></td>
+          <td class="fund-cell">${h.per || '-'}</td>
+          <td class="fund-cell">${h.pbr || '-'}</td>
+          <td class="fund-cell">${h.psr || '-'}</td>
+          <td class="fund-cell">${roe}</td>
           <td style="font-size:11px;color:var(--text-sub)">${h.updated_at}</td>
         </tr>`;
       }).join('');
@@ -446,6 +730,219 @@ function clearTrades() {
     .then(r => r.json())
     .then(d => { if (d.ok) { showToast('거래내역이 삭제되었습니다.'); loadTrades(); } })
     .catch(() => showToast('삭제 실패', 'error'));
+}
+
+// ── 성과 분석 ──────────────────────────────────────────────────────────
+
+let _equityChart = null;
+
+function loadAnalytics() {
+  fetch('/api/analytics')
+    .then(r => r.json())
+    .then(data => {
+      renderKPI(data.summary);
+      renderEquityCurve(data.equity_curve);
+      renderHeatmap(data.heatmap);
+      renderTickerStats(data.ticker_stats);
+
+      // 기간 레이블
+      const rangeEl = document.getElementById('analytics-range');
+      if (data.equity_curve.length >= 2) {
+        rangeEl.textContent =
+          `${data.equity_curve[0].date} ~ ${data.equity_curve[data.equity_curve.length-1].date}`;
+      } else {
+        rangeEl.textContent = '';
+      }
+    })
+    .catch(() => showToast('성과 데이터 로드 실패', 'error'));
+}
+
+/* ── KPI 카드 ── */
+function renderKPI(s) {
+  const pnlColor = s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const mddColor = s.mdd > 20 ? 'var(--red)' : s.mdd > 10 ? '#f5a623' : 'var(--text)';
+
+  setText('kpi-total',   s.total_trades);
+  setText('kpi-winrate', s.total_trades ? `${s.win_rate}%` : '--',
+          s.win_rate >= 50 ? 'var(--green)' : 'var(--red)');
+  setText('kpi-wl',      `${s.wins}승 ${s.losses}패`);
+  setText('kpi-pf',      s.total_trades ? s.profit_factor : '--',
+          s.profit_factor >= 1 ? 'var(--green)' : 'var(--red)');
+  setText('kpi-avgwl',   s.total_trades
+    ? `평균 +${fmt(s.avg_win)} / -${fmt(Math.abs(s.avg_loss))}` : '--');
+  setText('kpi-mdd',     s.total_trades ? `${s.mdd}%` : '--', mddColor);
+  setText('kpi-pnl',     s.total_trades ? fmt(s.total_pnl) : '--', pnlColor);
+  setText('kpi-bestworse', s.total_trades
+    ? `최고 +${fmt(s.best_trade)} / 최저 ${fmt(s.worst_trade)}` : '--');
+}
+
+function setText(id, val, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = val;
+  if (color) el.style.color = color;
+}
+
+function fmt(n) {
+  if (n == null) return '--';
+  return Number(n).toLocaleString('ko-KR', { maximumFractionDigits: 0 });
+}
+
+/* ── 에쿼티 커브 ── */
+function renderEquityCurve(curve) {
+  const canvas  = document.getElementById('equity-chart');
+  const emptyEl = document.getElementById('equity-empty');
+  if (!canvas) return;
+
+  if (!curve || curve.length === 0) {
+    canvas.style.display = 'none';
+    if (emptyEl) emptyEl.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const labels  = curve.map(p => p.date);
+  const equities = curve.map(p => p.equity);
+
+  // 색상: 0 이상 구간 초록, 이하 빨강 그라데이션
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.offsetHeight || 300);
+  const maxEq = Math.max(...equities);
+  const minEq = Math.min(...equities);
+  const zeroRatio = maxEq === minEq ? 0.5
+    : Math.max(0, Math.min(1, 1 - (0 - minEq) / (maxEq - minEq)));
+
+  gradient.addColorStop(0,          'rgba(0,210,110,0.35)');
+  gradient.addColorStop(zeroRatio,  'rgba(0,210,110,0.05)');
+  gradient.addColorStop(zeroRatio,  'rgba(255,80,80,0.05)');
+  gradient.addColorStop(1,          'rgba(255,80,80,0.35)');
+
+  if (_equityChart) { _equityChart.destroy(); _equityChart = null; }
+
+  _equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '누적 손익',
+        data: equities,
+        borderColor: equities[equities.length-1] >= 0 ? '#00d26e' : '#ff5050',
+        borderWidth: 2,
+        pointRadius: curve.length > 60 ? 0 : 3,
+        pointHoverRadius: 5,
+        fill: true,
+        backgroundColor: gradient,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` 누적: ${fmt(ctx.parsed.y)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#8899aa', maxTicksLimit: 12, maxRotation: 0 },
+          grid:  { color: 'rgba(255,255,255,0.05)' },
+        },
+        y: {
+          ticks: {
+            color: '#8899aa',
+            callback: v => fmt(v),
+          },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          // 0 기준선 강조
+          afterBuildTicks(axis) {
+            axis.ticks.push({ value: 0 });
+          },
+        },
+      },
+    },
+  });
+}
+
+/* ── 월별 히트맵 ── */
+function renderHeatmap(heatmap) {
+  const container = document.getElementById('heatmap-container');
+  if (!container) return;
+
+  const months = Object.keys(heatmap).sort();
+  if (months.length === 0) {
+    container.innerHTML = '<p class="analytics-empty">실현 손익 데이터가 없습니다.</p>';
+    return;
+  }
+
+  // 전체 손익 범위 파악 (색상 정규화용)
+  let allPnl = [];
+  months.forEach(ym => Object.values(heatmap[ym]).forEach(v => allPnl.push(v)));
+  const maxAbs = Math.max(...allPnl.map(Math.abs), 1);
+
+  const DOW = ['일', '월', '화', '수', '목', '금', '토'];
+
+  container.innerHTML = months.map(ym => {
+    const [year, month] = ym.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const firstDow = new Date(year, month - 1, 1).getDay();  // 0=일
+
+    let cells = '';
+    // 첫 주 빈칸
+    for (let i = 0; i < firstDow; i++) {
+      cells += `<div class="hm-cell hm-empty"></div>`;
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dd   = String(d).padStart(2, '0');
+      const pnl  = heatmap[ym][dd];
+      const cls  = pnl == null ? 'hm-none'
+                 : pnl === 0  ? 'hm-zero'
+                 : pnl > 0
+                   ? (pnl / maxAbs > 0.5 ? 'hm-win-deep' : 'hm-win')
+                   : (Math.abs(pnl) / maxAbs > 0.5 ? 'hm-loss-deep' : 'hm-loss');
+      const tip  = pnl != null ? `${ym}-${dd}: ${fmt(pnl)}` : `${ym}-${dd}`;
+      cells += `<div class="hm-cell ${cls}" title="${tip}">
+                  <span class="hm-day">${d}</span>
+                </div>`;
+    }
+
+    const dowHeader = DOW.map(d => `<div class="hm-dow">${d}</div>`).join('');
+    return `
+      <div class="hm-month-block">
+        <div class="hm-month-label">${year}년 ${month}월</div>
+        <div class="hm-grid">
+          ${dowHeader}
+          ${cells}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* ── 종목별 통계 ── */
+function renderTickerStats(stats) {
+  const tbody = document.getElementById('ticker-stats-tbody');
+  if (!tbody) return;
+  if (!stats || stats.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">데이터 없음</td></tr>';
+    return;
+  }
+  tbody.innerHTML = stats.map(s => {
+    const pnlColor = s.total_pnl >= 0 ? 'sig-buy' : 'sig-sell';
+    const wrColor  = s.win_rate >= 50  ? 'sig-buy' : 'sig-sell';
+    return `<tr>
+      <td><strong>${s.ticker}</strong></td>
+      <td>${s.name || '-'}</td>
+      <td>${s.trades}</td>
+      <td>${s.wins}승 ${s.trades - s.wins}패</td>
+      <td><span class="${wrColor}">${s.win_rate}%</span></td>
+      <td><span class="${pnlColor}">${fmt(s.total_pnl)}</span></td>
+    </tr>`;
+  }).join('');
 }
 
 // ── 섹션별 저장 ───────────────────────────────────────────────────────
@@ -566,3 +1063,473 @@ evtSource.onmessage = e => {
 evtSource.onerror = () => {
   appendLog('[시스템] 로그 스트림 연결 끊김 – 재연결 중...');
 };
+
+// ══════════════════════════════════════════════════════════════════════
+// 백테스팅 & 시뮬레이션
+// ══════════════════════════════════════════════════════════════════════
+
+let _btEquityChart = null;
+let _btRsiChart    = null;
+
+/* 탭 진입 시 날짜 기본값 설정 (오늘 ~ 1개월 전) */
+function btInitDates() {
+  const endEl   = document.getElementById('bt-end');
+  const startEl = document.getElementById('bt-start');
+  if (!endEl || !startEl) return;
+  const today  = new Date();
+  const m1ago  = new Date(today);
+  m1ago.setMonth(m1ago.getMonth() - 1);
+  endEl.value   = today.toISOString().slice(0, 10);
+  startEl.value = m1ago.toISOString().slice(0, 10);
+}
+
+/* 날짜 프리셋 버튼 (1M / 3M / 6M / 1Y / 3Y) */
+function btSetDateRange(n, unit) {
+  const endEl   = document.getElementById('bt-end');
+  const startEl = document.getElementById('bt-start');
+  if (!endEl || !startEl) return;
+  const today = new Date();
+  const from  = new Date(today);
+  if (unit === 'M') from.setMonth(from.getMonth() - n);
+  if (unit === 'Y') from.setFullYear(from.getFullYear() - n);
+  endEl.value   = today.toISOString().slice(0, 10);
+  startEl.value = from.toISOString().slice(0, 10);
+  // 활성 버튼 표시
+  document.querySelectorAll('.bt-date-presets button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+/* 현재 전략 설정 → 파라미터 필드에 자동 채우기 */
+function btLoadCurrent(set) {
+  const p = _currentSettings;
+  const prefix = `bt-${set}-`;
+  const map = {
+    'rsi-period':    p.RSI_PERIOD    || '14',
+    'rsi-oversold':  p.RSI_OVERSOLD  || '30',
+    'rsi-overbought':p.RSI_OVERBOUGHT|| '70',
+    'bb-period':     p.BB_PERIOD     || '20',
+    'bb-std':        p.BB_STD        || '2.0',
+  };
+  Object.entries(map).forEach(([k, v]) => {
+    const el = document.getElementById(prefix + k);
+    if (el) el.value = v;
+  });
+  showToast(`세트 ${set.toUpperCase()}에 현재 설정 불러옴`);
+}
+
+/* 비교 세트 B 활성/비활성 토글 */
+function btToggleB(on) {
+  const fields = document.getElementById('bt-b-fields');
+  if (fields) {
+    fields.style.opacity       = on ? '1'    : '0.35';
+    fields.style.pointerEvents = on ? 'auto' : 'none';
+  }
+}
+
+/* 파라미터 객체 수집 헬퍼 */
+function btCollectParams(prefix) {
+  const g = id => parseFloat(document.getElementById(prefix + id)?.value) || 0;
+  return {
+    rsi_period:     g('rsi-period'),
+    rsi_oversold:   g('rsi-oversold'),
+    rsi_overbought: g('rsi-overbought'),
+    bb_period:      g('bb-period'),
+    bb_std:         g('bb-std'),
+  };
+}
+
+/* ── 메인 실행 함수 ── */
+function runBacktest() {
+  const ticker   = document.getElementById('bt-ticker')?.value.trim().toUpperCase();
+  const exchange = document.getElementById('bt-exchange')?.value || 'KRX';
+  const start    = document.getElementById('bt-start')?.value;
+  const end      = document.getElementById('bt-end')?.value;
+  const cash     = parseFloat(document.getElementById('bt-cash')?.value) || 10_000_000;
+  const qty      = parseInt(document.getElementById('bt-qty')?.value) || 1;
+  const useB     = document.getElementById('bt-use-b')?.checked;
+
+  if (!ticker) { showToast('종목코드를 입력하세요.', 'error'); return; }
+
+  const paramsA = btCollectParams('bt-a-');
+  const paramsB = useB ? btCollectParams('bt-b-') : null;
+
+  // UI 상태
+  const btn    = document.getElementById('bt-run-btn');
+  const status = document.getElementById('bt-status');
+  btn.disabled    = true;
+  btn.textContent = '⏳ 실행 중...';
+  status.textContent = 'KIS API에서 과거 데이터를 조회 중입니다...';
+  status.className   = 'bt-status bt-status-loading';
+
+  document.getElementById('bt-empty').style.display       = 'none';
+  document.getElementById('bt-result-inner').style.display = 'none';
+
+  fetch('/api/backtest', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ticker, exchange,
+      start_date:   start,
+      end_date:     end,
+      initial_cash: cash,
+      order_qty:    qty,
+      params_a:     paramsA,
+      params_b:     paramsB,
+    }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        status.textContent = `❌ ${data.error}`;
+        status.className   = 'bt-status bt-status-error';
+        document.getElementById('bt-empty').style.display = 'flex';
+        return;
+      }
+      status.textContent = '';
+      status.className   = 'bt-status';
+      btRenderResult(data, ticker, paramsA, paramsB);
+    })
+    .catch(e => {
+      status.textContent = `❌ 서버 오류: ${e.message}`;
+      status.className   = 'bt-status bt-status-error';
+      document.getElementById('bt-empty').style.display = 'flex';
+    })
+    .finally(() => {
+      btn.disabled    = false;
+      btn.textContent = '▶ 백테스트 실행';
+    });
+}
+
+/* ── 결과 렌더링 ── */
+function btRenderResult(data, ticker, paramsA, paramsB) {
+  const inner = document.getElementById('bt-result-inner');
+  inner.style.display = 'block';
+
+  const ra = data.result_a;
+  const rb = data.result_b;
+
+  // 범위 정보
+  const rangeBar = document.getElementById('bt-range-bar');
+  if (rangeBar && data.ohlcv_range) {
+    const r = data.ohlcv_range;
+    rangeBar.innerHTML =
+      `<strong>${ticker}</strong> &nbsp;|&nbsp; ${r.start} ~ ${r.end} &nbsp;|&nbsp; ${r.bars}거래일`;
+  }
+
+  // KPI 비교 카드
+  btRenderKPI(ra, rb);
+
+  // 에쿼티 커브
+  btRenderEquityChart(ra, rb);
+
+  // RSI 차트
+  btRenderRsiChart(ra);
+
+  // 체결 내역
+  btRenderTrades(ra.trades || []);
+}
+
+/* ── KPI 비교 카드 ── */
+function btRenderKPI(ra, rb) {
+  const wrap = document.getElementById('bt-kpi-wrap');
+  if (!wrap) return;
+
+  const s = ra.summary;
+  const sb = rb?.summary;
+
+  const kpis = [
+    { label: '총 수익률',    va: s.total_return_pct + '%',   vb: sb ? sb.total_return_pct + '%' : null,
+      colorA: s.total_return_pct >= 0,   colorB: sb ? sb.total_return_pct >= 0 : null },
+    { label: '누적 손익',    va: fmt(s.total_pnl),           vb: sb ? fmt(sb.total_pnl) : null,
+      colorA: s.total_pnl >= 0,          colorB: sb ? sb.total_pnl >= 0 : null },
+    { label: '승률',         va: s.win_rate + '%',           vb: sb ? sb.win_rate + '%' : null,
+      colorA: s.win_rate >= 50,          colorB: sb ? sb.win_rate >= 50 : null },
+    { label: 'Profit Factor',va: s.profit_factor,            vb: sb ? sb.profit_factor : null,
+      colorA: s.profit_factor >= 1,      colorB: sb ? sb.profit_factor >= 1 : null },
+    { label: 'MDD',          va: s.mdd + '%',                vb: sb ? sb.mdd + '%' : null,
+      colorA: s.mdd < 20,               colorB: sb ? sb.mdd < 20 : null, invertColor: true },
+    { label: '총 거래 수',   va: s.total_trades,             vb: sb ? sb.total_trades : null,  noColor: true },
+    { label: '최고 단일 거래', va: fmt(s.best_trade),         vb: sb ? fmt(sb.best_trade) : null, colorA: true, colorB: true },
+    { label: '최악 단일 거래', va: fmt(s.worst_trade),        vb: sb ? fmt(sb.worst_trade) : null, colorA: s.worst_trade >= 0, colorB: sb ? sb.worst_trade >= 0 : null },
+  ];
+
+  wrap.innerHTML = kpis.map(k => {
+    const cA = k.noColor ? '' : (k.colorA ? 'bt-kpi-green' : 'bt-kpi-red');
+    const cB = !rb || k.noColor ? '' : (k.colorB ? 'bt-kpi-green' : 'bt-kpi-red');
+    const bCol = rb && !k.noColor
+      ? (() => {
+          const numA = parseFloat(String(k.va).replace(/,/g,''));
+          const numB = parseFloat(String(k.vb).replace(/,/g,''));
+          if (isNaN(numA) || isNaN(numB)) return '';
+          const better = k.invertColor ? numB < numA : numB > numA;
+          return better ? ' bt-kpi-better' : numB < numA ? ' bt-kpi-worse' : '';
+        })()
+      : '';
+
+    return `<div class="bt-kpi-card">
+      <div class="bt-kpi-label">${k.label}</div>
+      <div class="bt-kpi-row">
+        <div class="bt-kpi-val ${cA}"><span class="bt-set-badge bt-a">A</span>${k.va}</div>
+        ${rb ? `<div class="bt-kpi-val ${cB}${bCol}"><span class="bt-set-badge bt-b">B</span>${k.vb}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ── 에쿼티 커브 차트 ── */
+function btRenderEquityChart(ra, rb) {
+  const canvas = document.getElementById('bt-equity-chart');
+  if (!canvas) return;
+  if (_btEquityChart) { _btEquityChart.destroy(); _btEquityChart = null; }
+
+  const curveA = ra.equity_curve || [];
+  const curveB = rb?.equity_curve || [];
+  const labels = curveA.map(p => p.date);
+
+  const ctx = canvas.getContext('2d');
+  const datasets = [
+    {
+      label: '세트 A',
+      data: curveA.map(p => p.equity),
+      borderColor: '#4f8ef7', borderWidth: 2,
+      pointRadius: labels.length > 100 ? 0 : 2,
+      fill: false, tension: 0.3,
+    },
+  ];
+  if (curveB.length) {
+    datasets.push({
+      label: '세트 B',
+      data: curveB.map(p => p.equity),
+      borderColor: '#f5c842', borderWidth: 2,
+      borderDash: [5, 4],
+      pointRadius: 0,
+      fill: false, tension: 0.3,
+    });
+  }
+  // 초기 자본 기준선
+  const initCash = ra.summary.initial_cash;
+  datasets.push({
+    label: '초기 자본',
+    data: labels.map(() => initCash),
+    borderColor: 'rgba(255,255,255,0.15)', borderWidth: 1,
+    borderDash: [4, 4], pointRadius: 0, fill: false,
+  });
+
+  _btEquityChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8899aa', font: { size: 12 } } },
+        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${fmt(c.parsed.y)}` } },
+      },
+      scales: {
+        x: { ticks: { color: '#8899aa', maxTicksLimit: 10, maxRotation: 0 },
+             grid:  { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#8899aa', callback: v => fmt(v) },
+             grid:  { color: 'rgba(255,255,255,0.04)' } },
+      },
+    },
+  });
+}
+
+/* ── RSI 차트 ── */
+function btRenderRsiChart(ra) {
+  const canvas = document.getElementById('bt-rsi-chart');
+  if (!canvas) return;
+  if (_btRsiChart) { _btRsiChart.destroy(); _btRsiChart = null; }
+
+  const curve  = ra.equity_curve || [];
+  const labels = curve.map(p => p.date);
+  const rsiVal = curve.map(p => p.rsi);
+  const oversold   = parseFloat(document.getElementById('bt-a-rsi-oversold')?.value)   || 30;
+  const overbought = parseFloat(document.getElementById('bt-a-rsi-overbought')?.value) || 70;
+
+  // 매수/매도 시점 마커 (null이면 포인트 없음)
+  const buyMarkers  = curve.map(p => p.signal === 'BUY'  ? p.rsi : null);
+  const sellMarkers = curve.map(p => p.signal === 'SELL' ? p.rsi : null);
+
+  const ctx = canvas.getContext('2d');
+  _btRsiChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'RSI', data: rsiVal, borderColor: '#27c98f', borderWidth: 1.5,
+          pointRadius: 0, fill: false, tension: 0.2 },
+        { label: `과매도(${oversold})`,   data: labels.map(() => oversold),
+          borderColor: 'rgba(80,200,120,0.4)', borderWidth:1, borderDash:[4,4], pointRadius:0, fill:false },
+        { label: `과매수(${overbought})`, data: labels.map(() => overbought),
+          borderColor: 'rgba(240,91,91,0.4)', borderWidth:1, borderDash:[4,4], pointRadius:0, fill:false },
+        { label: '매수', data: buyMarkers,
+          borderColor: 'transparent', backgroundColor: '#4fc97a',
+          pointRadius: curve.map(p => p.signal === 'BUY' ? 6 : 0),
+          pointStyle: 'triangle', showLine: false },
+        { label: '매도', data: sellMarkers,
+          borderColor: 'transparent', backgroundColor: '#f05b5b',
+          pointRadius: curve.map(p => p.signal === 'SELL' ? 6 : 0),
+          pointStyle: 'triangle', rotation: 180, showLine: false },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#8899aa', font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color:'#8899aa', maxTicksLimit:8, maxRotation:0 },
+             grid: { color:'rgba(255,255,255,0.03)' } },
+        y: { min: 0, max: 100,
+             ticks: { color:'#8899aa', stepSize: 25 },
+             grid: { color:'rgba(255,255,255,0.03)' } },
+      },
+    },
+  });
+}
+
+/* ── 체결 내역 테이블 ── */
+function btRenderTrades(trades) {
+  const tbody = document.getElementById('bt-trades-tbody');
+  if (!tbody) return;
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">체결 내역 없음</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => {
+    const isBuy  = t.side.startsWith('BUY');
+    const cls    = isBuy ? 'sig-buy' : (t.pnl != null && t.pnl < 0 ? 'sig-sell' : 'sig-buy');
+    const pnlStr = t.pnl != null ? `<span class="${t.pnl >= 0 ? 'sig-buy':'sig-sell'}">${fmt(t.pnl)}</span>` : '-';
+    return `<tr>
+      <td style="font-size:12px">${t.date}</td>
+      <td><span class="${cls}" style="font-weight:700">${t.side}</span></td>
+      <td>${Number(t.price).toLocaleString()}</td>
+      <td>${t.qty}</td>
+      <td>${pnlStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 알림 설정 (Notifications)
+// ══════════════════════════════════════════════════════════════════════
+
+/* 알림 레벨 키 목록 */
+const _NOTIFY_LEVELS = [
+  'trade', 'trump', 'error', 'market_open', 'daily_summary',
+];
+
+/* 설정 불러오기 */
+function loadNotifySettings() {
+  fetch('/api/notify/settings')
+    .then(r => r.json())
+    .then(d => {
+      // 마스터 토글
+      const enabled = !!d.telegram_enabled;
+      const masterEl = document.getElementById('notify-telegram-enabled');
+      if (masterEl) masterEl.checked = enabled;
+      notifyToggleMaster(enabled, /* silent */ true);
+
+      // 봇 토큰 (마스킹된 값만 hint로 표시)
+      const tokenEl = document.getElementById('notify-bot-token');
+      if (tokenEl) tokenEl.placeholder = d.telegram_bot_token === '****'
+        ? '저장된 토큰 있음 (변경 시 입력)'
+        : '봇 토큰을 입력하세요';
+
+      // Chat ID
+      const cidEl = document.getElementById('notify-chat-id');
+      if (cidEl) cidEl.value = d.telegram_chat_id || '';
+
+      // 레벨별 토글
+      _NOTIFY_LEVELS.forEach(key => {
+        const el = document.getElementById(`notify-${key}`);
+        if (el) el.checked = !!d[`notify_${key}`];
+      });
+    })
+    .catch(() => showToast('알림 설정 로드 실패', 'error'));
+}
+
+/* 마스터 토글 ON/OFF */
+function notifyToggleMaster(enabled, silent = false) {
+  const statusEl = document.getElementById('notify-master-status');
+  const fieldsEl = document.getElementById('notify-telegram-fields');
+  if (statusEl) {
+    statusEl.textContent = enabled ? '활성화' : '비활성화';
+    statusEl.className   = `notify-status-text ${enabled ? 'on' : 'off'}`;
+  }
+  if (fieldsEl) {
+    fieldsEl.style.opacity      = enabled ? '1'    : '0.5';
+    fieldsEl.style.pointerEvents= enabled ? 'auto' : 'none';
+  }
+  if (!silent) saveNotifySettings();
+}
+
+/* 알림 설정 저장 */
+function saveNotifySettings() {
+  const token = document.getElementById('notify-bot-token')?.value.trim() || '****';
+  const cid   = document.getElementById('notify-chat-id')?.value.trim() || '';
+
+  const payload = {
+    telegram_enabled:   document.getElementById('notify-telegram-enabled')?.checked ?? false,
+    telegram_chat_id:   cid,
+  };
+  // 토큰이 비어있으면 기존 값 유지 (****로 서버에 전달 → 유지 처리)
+  payload.telegram_bot_token = token || '****';
+
+  _NOTIFY_LEVELS.forEach(key => {
+    const el = document.getElementById(`notify-${key}`);
+    payload[`notify_${key}`] = el ? el.checked : false;
+  });
+
+  fetch('/api/notify/settings', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) showToast('✅ 알림 설정이 저장되었습니다.');
+      else       showToast('저장 실패: ' + d.message, 'error');
+    })
+    .catch(() => showToast('서버 오류', 'error'));
+}
+
+/* 테스트 메시지 전송 */
+function testNotify() {
+  const btn      = document.querySelector('.btn-notify-test');
+  const resultEl = document.getElementById('notify-test-result');
+  const token    = document.getElementById('notify-bot-token')?.value.trim() || '****';
+  const cid      = document.getElementById('notify-chat-id')?.value.trim() || '';
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 전송 중...'; }
+  if (resultEl) { resultEl.textContent = ''; resultEl.className = 'notify-test-result'; }
+
+  fetch('/api/notify/test', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_bot_token: token,
+      telegram_chat_id:   cid,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (resultEl) {
+        resultEl.textContent = d.ok
+          ? '✅ 테스트 메시지를 전송했습니다! 텔레그램을 확인하세요.'
+          : `❌ 전송 실패: ${d.message}`;
+        resultEl.className = `notify-test-result ${d.ok ? 'ok' : 'err'}`;
+      }
+      if (!d.ok) showToast(d.message, 'error');
+    })
+    .catch(e => {
+      if (resultEl) {
+        resultEl.textContent = `❌ 서버 오류: ${e.message}`;
+        resultEl.className   = 'notify-test-result err';
+      }
+    })
+    .finally(() => {
+      if (btn) { btn.disabled = false; btn.textContent = '📨 테스트 전송'; }
+    });
+}
+

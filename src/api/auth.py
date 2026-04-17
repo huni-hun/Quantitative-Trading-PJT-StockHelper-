@@ -1,4 +1,5 @@
 import requests
+import time
 from config.settings import Settings
 from utils.logger import get_logger
 from utils.error_handler import handle_api_error
@@ -10,11 +11,21 @@ class KISAuth:
     """KIS REST API의 OAuth2 토큰 발급 및 갱신을 처리한다."""
 
     TOKEN_PATH = "/oauth2/tokenP"
+    # KIS 토큰 유효시간: 24시간. 만료 5분 전에 갱신
+    _TOKEN_TTL = 86400 - 300  # 23시간 55분
 
     def __init__(self) -> None:
         self._settings = Settings()
         self._base_url = Settings.get_base_url()
         self.access_token: str = ""
+        self._token_issued_at: float = 0.0  # 토큰 발급 시각 (time.time())
+
+    def _is_token_valid(self) -> bool:
+        """현재 토큰이 유효한지 확인한다."""
+        if not self.access_token:
+            return False
+        elapsed = time.time() - self._token_issued_at
+        return elapsed < self._TOKEN_TTL
 
     def authenticate(self) -> str:
         """KIS API에 새 액세스 토큰을 요청한다.
@@ -45,16 +56,18 @@ class KISAuth:
         if not self.access_token:
             raise RuntimeError("API 응답에서 액세스 토큰을 찾을 수 없습니다.")
 
-        logger.info("인증 성공.")
+        self._token_issued_at = time.time()
+        logger.info("인증 성공. 토큰 유효시간: 약 24시간.")
         return self.access_token
 
     def get_headers(self) -> dict:
         """이후 API 호출에 사용할 공통 인증 헤더를 생성한다.
+        토큰이 유효하면 재사용하고, 만료된 경우에만 재발급한다.
 
         Returns:
             dict: Bearer 토큰을 포함한 HTTP 헤더.
         """
-        if not self.access_token:
+        if not self._is_token_valid():
             self.authenticate()
 
         app_key, app_secret, _ = Settings._active()
