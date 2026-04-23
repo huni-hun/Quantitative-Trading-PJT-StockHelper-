@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time as _time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -10,6 +11,22 @@ from utils.logger import get_logger
 from utils.error_handler import handle_api_error
 
 logger = get_logger(__name__)
+
+# KIS API 레이트 리미터 – 초당 최대 호출 수
+_KIS_MIN_INTERVAL = 0.35   # 초 (약 초당 2.8회 → 안전 마진 포함)
+_last_call_time: float = 0.0
+_rate_lock = __import__("threading").Lock()
+
+
+def _rate_limit_wait() -> None:
+    """KIS API 호출 전 최소 간격을 보장한다 (전역 레이트 리미터)."""
+    global _last_call_time
+    with _rate_lock:
+        now = _time.monotonic()
+        elapsed = now - _last_call_time
+        if elapsed < _KIS_MIN_INTERVAL:
+            _time.sleep(_KIS_MIN_INTERVAL - elapsed)
+        _last_call_time = _time.monotonic()
 
 
 class PriceAPI:
@@ -78,6 +95,7 @@ class PriceAPI:
         }
 
         logger.info("[국내] 현재 시세 조회 | 종목: %s", ticker)
+        _rate_limit_wait()
         response = requests.get(url, headers=headers, params=params, timeout=10)
         handle_api_error(response)
         return response.json()
@@ -111,6 +129,7 @@ class PriceAPI:
                 "fid_org_adj_prc": "0",
             }
             try:
+                _rate_limit_wait()
                 response = requests.get(url, headers=headers, params=params, timeout=10)
                 handle_api_error(response)
                 data = response.json()
@@ -172,6 +191,7 @@ class PriceAPI:
         }
 
         logger.info("[해외:%s] 현재 시세 조회 | 종목: %s", exchange, ticker)
+        _rate_limit_wait()
         response = requests.get(url, headers=headers, params=params, timeout=10)
         handle_api_error(response)
         return response.json()
@@ -201,6 +221,7 @@ class PriceAPI:
             }
 
             try:
+                _rate_limit_wait()
                 response = requests.get(url, headers=headers, params=params, timeout=10)
                 handle_api_error(response)
                 data = response.json()

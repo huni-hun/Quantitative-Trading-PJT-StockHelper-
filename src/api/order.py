@@ -4,6 +4,7 @@ import requests
 from config.settings import Settings, TickerInfo
 from utils.logger import get_logger
 from utils.error_handler import handle_api_error
+from src.api.price import _rate_limit_wait
 
 logger = get_logger(__name__)
 
@@ -122,6 +123,7 @@ class OrderAPI:
         }
 
         logger.info("[국내/%s] %s 주문 | 종목=%s 수량=%d 가격=%d", self._env, side, ticker, quantity, price)
+        _rate_limit_wait()
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         handle_api_error(response)
 
@@ -167,6 +169,7 @@ class OrderAPI:
         }
 
         logger.info("[해외:%s/%s] %s 주문 | 종목=%s 수량=%d 가격=%.4f", exchange, self._env, side, ticker, quantity, price)
+        _rate_limit_wait()
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         handle_api_error(response)
 

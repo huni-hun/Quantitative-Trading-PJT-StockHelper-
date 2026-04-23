@@ -117,10 +117,11 @@ class Settings:
         return cls._active()[2]
 
     # ── LLM 제공자 설정 ──────────────────────────────────────────
-    # LLM_PROVIDER: openai | groq | ollama
+    # LLM_PROVIDER: openai | groq | ollama | gemini
     #   - openai : OpenAI API (유료)          모델 예: gpt-4o-mini
     #   - groq   : Groq API (무료 플랜 있음)  모델 예: llama-3.3-70b-versatile
     #   - ollama : 로컬 무료                  모델 예: llama3.2
+    #   - gemini : Google Gemini API (유료)   모델 예: gemini-2.0-flash, gemini-1.5-pro
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").lower()
 
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -132,6 +133,9 @@ class Settings:
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL:    str = os.getenv("OLLAMA_MODEL", "llama3.2")
 
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL:   str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
     # ── 매매 설정 ────────────────────────────────────────────────
     TARGET_TICKERS: list[TickerInfo] = _parse_tickers(
         os.getenv(
@@ -141,7 +145,9 @@ class Settings:
     )
 
     ORDER_QUANTITY: int = int(os.getenv("ORDER_QUANTITY", "1"))
-    STRATEGY_INTERVAL_SECONDS: int = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "3600"))
+    STRATEGY_INTERVAL_SECONDS: int = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "180"))
+    # 종목 간 처리 딜레이 (초) – API 레이트 리밋 방지용
+    TICKER_DELAY_SECONDS: float = float(os.getenv("TICKER_DELAY_SECONDS", "1.5"))
 
     @classmethod
     def get_base_url(cls) -> str:
@@ -167,6 +173,8 @@ class Settings:
             missing.append("OPENAI_API_KEY")
         elif cls.LLM_PROVIDER == "groq" and not cls.GROQ_API_KEY:
             missing.append("GROQ_API_KEY")
+        elif cls.LLM_PROVIDER == "gemini" and not cls.GEMINI_API_KEY:
+            missing.append("GEMINI_API_KEY")
 
         if missing:
             raise ValueError(

@@ -1,12 +1,13 @@
 """LLM 클라이언트 팩토리.
 
-LLM_PROVIDER 환경 변수에 따라 OpenAI / Groq / Ollama 중 하나를 선택하여
+LLM_PROVIDER 환경 변수에 따라 OpenAI / Groq / Ollama / Gemini 중 하나를 선택하여
 동일한 인터페이스로 채팅 완성(Chat Completion)을 호출한다.
 
 지원 제공자:
     - openai : OpenAI API (유료)
     - groq   : Groq API  (무료 플랜 있음, https://console.groq.com)
     - ollama : 로컬 LLM  (완전 무료, https://ollama.com)
+    - gemini : Google Gemini API (https://aistudio.google.com)
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ def _get_model() -> str:
         return Settings.GROQ_MODEL
     if p == "ollama":
         return Settings.OLLAMA_MODEL
+    if p == "gemini":
+        return Settings.GEMINI_MODEL
     return Settings.OPENAI_MODEL
 
 
@@ -58,8 +61,10 @@ def chat_complete(
             return _call_groq(messages, model, temperature, max_tokens)
         if provider == "ollama":
             return _call_ollama(messages, model, temperature, max_tokens)
+        if provider == "gemini":
+            return _call_gemini(messages, model, temperature, max_tokens)
 
-        logger.error("알 수 없는 LLM 제공자: %s – openai/groq/ollama 중 선택하세요.", provider)
+        logger.error("알 수 없는 LLM 제공자: %s – openai/groq/ollama/gemini 중 선택하세요.", provider)
         return ""
 
     except Exception as exc:  # noqa: BLE001
@@ -109,3 +114,33 @@ def _call_ollama(messages: list, model: str, temperature: float, max_tokens: int
     resp = requests.post(url, json=payload, timeout=60)
     resp.raise_for_status()
     return resp.json().get("message", {}).get("content", "")
+
+
+def _call_gemini(messages: list, model: str, temperature: float, max_tokens: int) -> str:
+    """Google Gemini API 호출 (google-generativeai SDK 사용)."""
+    import google.generativeai as genai
+
+    genai.configure(api_key=Settings.GEMINI_API_KEY)
+
+    # system + user 메시지를 Gemini 형식으로 변환
+    system_text = ""
+    user_text = ""
+    for msg in messages:
+        if msg["role"] == "system":
+            system_text = msg["content"]
+        elif msg["role"] == "user":
+            user_text = msg["content"]
+
+    # system instruction이 있으면 모델 초기화 시 전달
+    gen_model = genai.GenerativeModel(
+        model_name=model,
+        system_instruction=system_text if system_text else None,
+        generation_config=genai.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        ),
+    )
+
+    response = gen_model.generate_content(user_text)
+    return response.text or ""
+
