@@ -346,7 +346,8 @@ def _reload_settings() -> None:
     Settings.OLLAMA_MODEL            = os.getenv("OLLAMA_MODEL", "llama3.2")
     # 매매
     Settings.ORDER_QUANTITY          = int(os.getenv("ORDER_QUANTITY", "1"))
-    Settings.STRATEGY_INTERVAL_SECONDS = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "3600"))
+    Settings.STRATEGY_INTERVAL_SECONDS = int(os.getenv("STRATEGY_INTERVAL_SECONDS", "180"))
+    Settings.TICKER_DELAY_SECONDS    = float(os.getenv("TICKER_DELAY_SECONDS", "1.5"))
     Settings.TARGET_TICKERS          = _parse_tickers(
         os.getenv("TARGET_TICKERS", "005930:KRX")
     )
@@ -770,8 +771,22 @@ def api_bot_signal():
     technical = body.get("technical", "HOLD")
     decision  = body.get("decision", "HOLD")
     price     = str(body.get("price", "N/A"))
+    momentum        = body.get("momentum", "HOLD")
+    composite_score = float(body.get("composite_score", 0.0))
+    tech_score      = float(body.get("tech_score", 0.0))
+    sentiment_score = float(body.get("sentiment_score", 0.0))
+    momentum_score  = float(body.get("momentum_score", 0.0))
+    tech_breakdown  = body.get("tech_breakdown", {})
     if ticker:
-        update_bot_signal(ticker, sentiment, technical, decision, price)
+        update_bot_signal(
+            ticker, sentiment, technical, decision, price,
+            momentum=momentum,
+            composite_score=composite_score,
+            tech_score=tech_score,
+            sentiment_score=sentiment_score,
+            momentum_score=momentum_score,
+            tech_breakdown=tech_breakdown,
+        )
     return jsonify({"ok": True})
 
 
@@ -1560,7 +1575,8 @@ def api_get_settings():
         "OLLAMA_MODEL":       env.get("OLLAMA_MODEL", "llama3.2"),
         "TARGET_TICKERS":     env.get("TARGET_TICKERS", ""),
         "ORDER_QUANTITY":     env.get("ORDER_QUANTITY", "1"),
-        "STRATEGY_INTERVAL_SECONDS": env.get("STRATEGY_INTERVAL_SECONDS", "60"),
+        "STRATEGY_INTERVAL_SECONDS": env.get("STRATEGY_INTERVAL_SECONDS", "180"),
+        "TICKER_DELAY_SECONDS":      env.get("TICKER_DELAY_SECONDS", "1.5"),
         "RSI_PERIOD":         env.get("RSI_PERIOD", "14"),
         "RSI_OVERSOLD":       env.get("RSI_OVERSOLD", "30"),
         "RSI_OVERBOUGHT":     env.get("RSI_OVERBOUGHT", "70"),
@@ -1635,15 +1651,33 @@ def index():
 # 봇 상태 업데이트 헬퍼 (main.py에서 import해서 사용)
 # ---------------------------------------------------------------------------
 
-def update_bot_signal(ticker: str, sentiment: str, technical: str, decision: str, price: str):
+def update_bot_signal(
+    ticker: str,
+    sentiment: str,
+    technical: str,
+    decision: str,
+    price: str,
+    momentum: str = "HOLD",
+    composite_score: float = 0.0,
+    tech_score: float = 0.0,
+    sentiment_score: float = 0.0,
+    momentum_score: float = 0.0,
+    tech_breakdown: dict | None = None,
+):
     """main.py 전략 루프에서 호출하여 시그널 상태를 갱신한다."""
     with _bot_lock:
         _bot_state["signals"][ticker] = {
-            "sentiment":  sentiment,
-            "technical":  technical,
-            "decision":   decision,
-            "price":      price,
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "sentiment":       sentiment,
+            "technical":       technical,
+            "momentum":        momentum,
+            "decision":        decision,
+            "composite_score": round(composite_score, 3),
+            "tech_score":      round(tech_score, 2),
+            "sentiment_score": round(sentiment_score, 3),
+            "momentum_score":  round(momentum_score, 2),
+            "tech_breakdown":  tech_breakdown or {},
+            "price":           price,
+            "updated_at":      datetime.now().strftime("%H:%M:%S"),
         }
         _bot_state["cycle_count"] += 1
 
