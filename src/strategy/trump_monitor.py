@@ -1,15 +1,14 @@
 """트럼프 포스팅 실시간 모니터 전략.
 
-X(트위터) @realDonaldTrump 계정의 Nitter RSS 피드를 백그라운드 스레드로
-폴링하여 새 포스팅이 감지되면 즉시 GPT로 시장 영향도를 분석한다.
+Truth Social RSS 피드(@realDonaldTrump)를 백그라운드 스레드로 폴링하여
+새 포스팅이 감지되면 즉시 LLM으로 시장 영향도를 분석한다.
+
+우선순위:
+    1. Truth Social 공식 RSS (가장 안정적)
+    2. Nitter 퍼블릭 인스턴스 (폴백)
 
 결과는 TrumpSignalStore(싱글톤)에 저장되며, 기존 매매 전략 루프에서
 트럼프 시그널을 추가 필터로 활용한다.
-
-시그널 로직:
-    - trump_score >= BULL_THRESHOLD  → BULLISH (시장 긍정)
-    - trump_score <= BEAR_THRESHOLD  → BEARISH (시장 부정)
-    - 그 외 또는 신규 포스팅 없음   → NEUTRAL
 """
 
 from __future__ import annotations
@@ -32,23 +31,31 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# 설정 상수
+# 피드 소스 설정
 # ---------------------------------------------------------------------------
 
-# Nitter 퍼블릭 인스턴스 목록 (하나가 막히면 다음 시도)
+# 1순위: Truth Social 공식 RSS
+_TRUTH_SOCIAL_RSS = "https://truthsocial.com/@realDonaldTrump.rss"
+
+# 2순위 폴백: Nitter 인스턴스 목록
 _NITTER_INSTANCES = [
     "https://nitter.net",
-    "https://nitter.privacydev.net",
     "https://nitter.poast.org",
+    "https://nitter.privacydev.net",
+    "https://nitter.1d4.us",
+    "https://nitter.kavin.rocks",
 ]
 _TRUMP_HANDLE = "realDonaldTrump"
 
-# 폴링 간격 (초) – 트럼프는 24시간 언제든 포스팅 가능하므로 장외에도 감시
+# 실패한 소스의 재시도 쿨다운 (초) — 429/403/DNS 오류 시 이 시간 동안 건너뜀
+_SOURCE_COOLDOWN_SECONDS = 600   # 10분
+
+# 폴링 간격
 POLL_INTERVAL_SECONDS = 30
 
-# GPT 판단 임계값
-BULL_THRESHOLD =  0.35   # 이 이상이면 BULLISH
-BEAR_THRESHOLD = -0.35   # 이 이하면 BEARISH
+# LLM 판단 임계값
+BULL_THRESHOLD =  0.35
+BEAR_THRESHOLD = -0.35
 
 _TRUMP_SYSTEM_PROMPT = """당신은 글로벌 금융 시장 전문가입니다.
 트럼프 전(현) 대통령의 소셜미디어 포스팅이 주식 시장 전반에 미치는 영향을
@@ -79,10 +86,10 @@ class TrumpPost:
     post_id:   str
     text:      str
     published: datetime
-    score:     float        # GPT 분석 점수 [-1, 1]
+    score:     float
     reason:    str
     keywords:  list[str] = field(default_factory=list)
-    signal:    str = "NEUTRAL"   # BULLISH / BEARISH / NEUTRAL
+    signal:    str = "NEUTRAL"
 
 
 class TrumpSignalStore:
@@ -102,30 +109,25 @@ class TrumpSignalStore:
         return cls._instance
 
     def add_post(self, post: TrumpPost) -> None:
-        """새 포스팅 분석 결과를 저장한다."""
         with self._rw_lock:
             self._posts.append(post)
             self._latest_signal = post.signal
             self._latest_score  = post.score
-            # 최대 100건만 유지
             if len(self._posts) > 100:
                 self._posts = self._posts[-100:]
 
     @property
     def latest_signal(self) -> str:
-        """가장 최근 트럼프 포스팅의 시장 시그널 (BULLISH/BEARISH/NEUTRAL)."""
         with self._rw_lock:
             return self._latest_signal
 
     @property
     def latest_score(self) -> float:
-        """가장 최근 트럼프 포스팅의 GPT 점수."""
         with self._rw_lock:
             return self._latest_score
 
     @property
     def recent_posts(self) -> list[TrumpPost]:
-        """최근 분석된 포스팅 목록 (복사본)."""
         with self._rw_lock:
             return list(self._posts)
 
@@ -135,52 +137,59 @@ class TrumpSignalStore:
 # ---------------------------------------------------------------------------
 
 class TrumpMonitor:
-    """@realDonaldTrump RSS 피드를 폴링하여 새 포스트를 즉시 분석하는 모니터."""
+    """Truth Social / Nitter RSS 피드를 폴링하여 새 포스트를 즉시 분석하는 모니터."""
 
     def __init__(self, poll_interval: int = POLL_INTERVAL_SECONDS) -> None:
-        """
-        Args:
-            poll_interval: 피드 폴링 간격 (초). 기본 30초.
-        """
         self._poll_interval = poll_interval
         self._store = TrumpSignalStore()
         self._seen_ids: set[str] = set()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # 소스별 쿨다운 만료 시각 (monotonic 기준)
+        self._source_cooldown: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 스레드 제어
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """백그라운드 폴링 스레드를 시작한다."""
         if self._thread and self._thread.is_alive():
             logger.warning("TrumpMonitor 이미 실행 중.")
             return
-
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._poll_loop,
             name="TrumpMonitor",
-            daemon=True,   # 메인 프로세스 종료 시 자동 종료
+            daemon=True,
         )
         self._thread.start()
         logger.info("TrumpMonitor 시작 | 폴링 간격: %d초", self._poll_interval)
 
     def stop(self) -> None:
-        """백그라운드 폴링 스레드를 중지한다."""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5)
         logger.info("TrumpMonitor 중지.")
 
     # ------------------------------------------------------------------
+    # 쿨다운 헬퍼
+    # ------------------------------------------------------------------
+
+    def _is_on_cooldown(self, source: str) -> bool:
+        """해당 소스가 현재 쿨다운 중인지 확인한다."""
+        expire = self._source_cooldown.get(source, 0.0)
+        return time.monotonic() < expire
+
+    def _set_cooldown(self, source: str, seconds: float = _SOURCE_COOLDOWN_SECONDS) -> None:
+        """해당 소스에 쿨다운을 설정한다."""
+        self._source_cooldown[source] = time.monotonic() + seconds
+        logger.debug("소스 쿨다운 설정: %s (%d분)", source, seconds // 60)
+
+    # ------------------------------------------------------------------
     # 폴링 루프
     # ------------------------------------------------------------------
 
     def _poll_loop(self) -> None:
-        """RSS 피드를 주기적으로 폴링하는 메인 루프."""
-        # 첫 실행 시 기존 포스트를 seen으로 마킹 (과거 포스트 재분석 방지)
         self._initialize_seen_ids()
 
         while not self._stop_event.is_set():
@@ -199,33 +208,61 @@ class TrumpMonitor:
             self._stop_event.wait(self._poll_interval)
 
     def _initialize_seen_ids(self) -> None:
-        """시작 시점의 기존 포스트 ID를 모두 seen으로 등록한다."""
         entries = self._fetch_feed()
         for entry in entries:
             self._seen_ids.add(entry.get("id", ""))
         logger.info("TrumpMonitor 초기화 완료 | 기존 포스트 %d건 마킹.", len(self._seen_ids))
 
     def _fetch_feed(self) -> list:
-        """Nitter RSS 피드를 조회한다. 여러 인스턴스를 순서대로 시도한다."""
+        """Truth Social → Nitter 순서로 피드를 조회한다. 실패 소스는 쿨다운 적용."""
+
+        # 1순위: Truth Social 공식 RSS
+        if not self._is_on_cooldown(_TRUTH_SOCIAL_RSS):
+            try:
+                resp = requests.get(
+                    _TRUTH_SOCIAL_RSS,
+                    headers=_REQUEST_HEADERS,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                feed = feedparser.parse(resp.content)
+                if feed.entries:
+                    logger.debug("Truth Social RSS 조회 성공 (%d건)", len(feed.entries))
+                    return feed.entries
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else 0
+                cooldown = 1800 if status in (429, 403) else _SOURCE_COOLDOWN_SECONDS
+                logger.debug("Truth Social 실패 (HTTP %d) → %d분 쿨다운", status, cooldown // 60)
+                self._set_cooldown(_TRUTH_SOCIAL_RSS, cooldown)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Truth Social 실패: %s → %d분 쿨다운", exc, _SOURCE_COOLDOWN_SECONDS // 60)
+                self._set_cooldown(_TRUTH_SOCIAL_RSS)
+
+        # 2순위: Nitter 인스턴스 순환
         for base in _NITTER_INSTANCES:
+            if self._is_on_cooldown(base):
+                continue
             url = f"{base}/{_TRUMP_HANDLE}/rss"
             try:
                 resp = requests.get(url, headers=_REQUEST_HEADERS, timeout=10)
                 resp.raise_for_status()
                 feed = feedparser.parse(resp.content)
                 if feed.entries:
+                    logger.debug("Nitter RSS 조회 성공: %s (%d건)", base, len(feed.entries))
                     return feed.entries
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else 0
+                cooldown = 1800 if status in (429, 403) else _SOURCE_COOLDOWN_SECONDS
+                logger.debug("Nitter 인스턴스 실패 (%s) HTTP %d → %d분 쿨다운", base, status, cooldown // 60)
+                self._set_cooldown(base, cooldown)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("Nitter 인스턴스 실패 (%s): %s", base, exc)
-                continue
+                logger.debug("Nitter 인스턴스 실패 (%s): %s → %d분 쿨다운", base, exc, _SOURCE_COOLDOWN_SECONDS // 60)
+                self._set_cooldown(base)
+
+        logger.warning("모든 트럼프 RSS 소스 사용 불가 (쿨다운 중) — NEUTRAL 유지.")
         return []
 
     def _fetch_new_posts(self) -> list[tuple[str, str, datetime]]:
-        """seen_ids에 없는 새 포스트만 반환한다.
-
-        Returns:
-            list of (텍스트, post_id, published_datetime)
-        """
         entries = self._fetch_feed()
         new: list[tuple[str, str, datetime]] = []
 
@@ -234,11 +271,9 @@ class TrumpMonitor:
             if post_id in self._seen_ids:
                 continue
 
-            # HTML 태그 제거 후 순수 텍스트 추출
             raw = entry.get("summary", entry.get("title", ""))
-            text = BeautifulSoup(raw, "lxml").get_text(separator=" ", strip=True)
+            text = BeautifulSoup(raw, "html.parser").get_text(separator=" ", strip=True)
 
-            # 발행 시각 파싱
             published_struct = entry.get("published_parsed")
             if published_struct:
                 published = datetime(*published_struct[:6], tzinfo=timezone.utc)
@@ -251,13 +286,10 @@ class TrumpMonitor:
         return new
 
     # ------------------------------------------------------------------
-    # GPT 분석
+    # LLM 분석
     # ------------------------------------------------------------------
 
-    def _analyze_and_store(
-        self, text: str, post_id: str, published: datetime
-    ) -> None:
-        """GPT로 포스팅을 분석하고 결과를 TrumpSignalStore에 저장한다."""
+    def _analyze_and_store(self, text: str, post_id: str, published: datetime) -> None:
         score, reason, keywords = self._gpt_analyze(text)
 
         if score >= BULL_THRESHOLD:
@@ -284,11 +316,6 @@ class TrumpMonitor:
         )
 
     def _gpt_analyze(self, text: str) -> tuple[float, str, list[str]]:
-        """LLM으로 트럼프 포스팅의 시장 영향도를 분석한다.
-
-        Returns:
-            (score, reason, keywords)
-        """
         try:
             raw = chat_complete(
                 system_prompt=_TRUMP_SYSTEM_PROMPT,
@@ -309,5 +336,5 @@ class TrumpMonitor:
             return score, reason, keywords
 
         except Exception as exc:  # noqa: BLE001
-            logger.error("트럼프 GPT 분석 실패: %s – 0.0 반환", exc)
+            logger.error("트럼프 LLM 분석 실패: %s – 0.0 반환", exc)
             return 0.0, "", []
