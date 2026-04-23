@@ -64,17 +64,29 @@ function refreshDashboard() {
       const tbody = document.getElementById('signal-tbody');
       const signals = d.signals || {};
       if (Object.keys(signals).length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">아직 데이터 없음 — 봇 실행 후 갱신됩니다.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">아직 데이터 없음 — 봇 실행 후 갱신됩니다.</td></tr>';
       } else {
-        tbody.innerHTML = Object.entries(signals).map(([ticker, v]) => `
+        tbody.innerHTML = Object.entries(signals).map(([ticker, v]) => {
+          // 복합점수 색상: ≥0.45 초록, ≤-0.45 빨강, 그외 회색
+          const cs = v.composite_score ?? 0;
+          const csColor = cs >= 0.45 ? '#4caf50' : cs <= -0.45 ? '#f44336' : 'var(--text-sub)';
+          const csText = cs >= 0.45 ? `▲ ${cs}` : cs <= -0.45 ? `▼ ${cs}` : cs;
+          // 세부 점수 툴팁
+          const bdMap = v.tech_breakdown || {};
+          const bdStr = Object.entries(bdMap).map(([k,sv]) => `${k}:${sv>0?'+':''}${sv}`).join(', ');
+          const techTitle = `기술점수: ${v.tech_score ?? '-'}${bdStr ? '\n' + bdStr : ''}`;
+          return `
           <tr>
             <td><strong>${ticker}</strong></td>
-            <td><span class="${sigClass(v.sentiment)}">${v.sentiment || '--'}</span></td>
-            <td><span class="${sigClass(v.technical)}">${v.technical || '--'}</span></td>
+            <td><span class="${sigClass(v.sentiment)}" title="감성점수: ${v.sentiment_score ?? '-'}">${v.sentiment || '--'}</span></td>
+            <td><span class="${sigClass(v.technical)}" title="${techTitle}">${v.technical || '--'} <small style="opacity:.6">${v.tech_score != null ? v.tech_score : ''}</small></span></td>
+            <td><span class="${sigClass(v.momentum)}" title="모멘텀점수: ${v.momentum_score ?? '-'}">${v.momentum || '--'}</span></td>
+            <td style="color:${csColor};font-weight:600">${csText}</td>
             <td><span class="${sigClass(v.decision)}">${v.decision || '--'}</span></td>
             <td>${v.price || '--'}</td>
             <td>${v.updated_at || '--'}</td>
-          </tr>`).join('');
+          </tr>`;
+        }).join('');
       }
 
       // 트럼프 포스팅 카드
@@ -1021,6 +1033,16 @@ function saveSection(section) {
 
 const logContainer = document.getElementById('log-container');
 
+// 매매 관련 키워드 판별
+const _TRADE_KEYWORDS = [
+  '매수', '매도', 'BUY', 'SELL', '체결', '주문', 'ORDER',
+  '📈', '📉', '[매수]', '[매도]', 'market_buy', 'market_sell',
+];
+function isTradeLog(line) {
+  const u = line.toUpperCase();
+  return _TRADE_KEYWORDS.some(k => u.includes(k.toUpperCase()));
+}
+
 function levelOf(line) {
   if (line.includes(' ERROR '))   return 'ERROR';
   if (line.includes(' WARNING ')) return 'WARNING';
@@ -1029,27 +1051,70 @@ function levelOf(line) {
 }
 
 function appendLog(line) {
-  const filterError = document.getElementById('log-filter-error').checked;
+  const filterError = document.getElementById('log-filter-error')?.checked;
+  const filterTrade = document.getElementById('log-filter-trade')?.checked;
   const level = levelOf(line);
-  if (filterError && level !== 'ERROR') return;
 
-  const div = document.createElement('div');
-  div.className = `log-line ${level}`;
-  div.textContent = line;
-  logContainer.appendChild(div);
+  // 로그 탭 필터 적용
+  let show = true;
+  if (filterError && level !== 'ERROR') show = false;
+  if (filterTrade && !isTradeLog(line))  show = false;
 
-  // 최대 500줄 유지
-  while (logContainer.children.length > 500) {
-    logContainer.removeChild(logContainer.firstChild);
+  if (show) {
+    const div = document.createElement('div');
+    div.className = `log-line ${level}`;
+    div.textContent = line;
+    logContainer.appendChild(div);
+
+    // 최대 500줄 유지
+    while (logContainer.children.length > 500) {
+      logContainer.removeChild(logContainer.firstChild);
+    }
+
+    if (document.getElementById('log-autoscroll').checked) {
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
   }
 
-  if (document.getElementById('log-autoscroll').checked) {
-    logContainer.scrollTop = logContainer.scrollHeight;
+  // 대시보드 매매 로그창에 매매 관련 로그 추가
+  if (isTradeLog(line)) {
+    appendTradeLog(line, level);
   }
 }
 
 function clearLog() {
   logContainer.innerHTML = '';
+}
+
+// ── 대시보드 매매 로그창 ──────────────────────────────────────────────
+
+const _tradeLogMax = 200;
+
+function appendTradeLog(line, level) {
+  const container = document.getElementById('trade-log-container');
+  if (!container) return;
+
+  const div = document.createElement('div');
+  div.className = `log-line trade-log-line ${level || levelOf(line)}`;
+  div.textContent = line;
+  container.appendChild(div);
+
+  while (container.children.length > _tradeLogMax) {
+    container.removeChild(container.firstChild);
+  }
+  // 항상 최신 로그가 아래
+  container.scrollTop = container.scrollHeight;
+
+  // 건수 배지 업데이트
+  const countEl = document.getElementById('trade-log-count');
+  if (countEl) countEl.textContent = `(${container.children.length}건)`;
+}
+
+function clearTradeLog() {
+  const container = document.getElementById('trade-log-container');
+  if (container) container.innerHTML = '';
+  const countEl = document.getElementById('trade-log-count');
+  if (countEl) countEl.textContent = '';
 }
 
 // SSE 연결

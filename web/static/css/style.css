@@ -844,153 +844,31 @@ input:checked + .slider::before { transform: translateX(20px); background: #fff;
 }
 .notify-preview-msg b { color: #fff; font-weight: 800; }
 
-/* ══════════════════════════════════════════════════
-   리스크 관리 배너
-   ══════════════════════════════════════════════════ */
-
-/* 배너 컨테이너 */
-.risk-banner {
-  display: flex; align-items: stretch; gap: 0;
-  background: var(--bg2); border: 1px solid var(--border);
+/* ── 대시보드 매매 로그창 ──────────────────────────────────────── */
+.trade-log-section-title {
+  display: flex; align-items: center; gap: 10px;
+}
+.trade-log-meta {
+  font-size: 12px; color: var(--text-sub); font-weight: 400;
+}
+.trade-log-container {
+  background: #0a0c14;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 22px;
-  overflow: hidden;
-  transition: border-color .3s, box-shadow .3s;
+  padding: 10px 14px;
+  height: 220px;
+  overflow-y: auto;
+  font-family: 'Consolas', 'Fira Mono', monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  margin-bottom: 24px;
 }
-.risk-banner.risk-banner-alert {
-  border-color: var(--red);
-  box-shadow: 0 0 0 2px rgba(240,91,91,.25);
-  animation: riskPulse 2s ease-in-out infinite;
+.trade-log-line {
+  padding: 1px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
-@keyframes riskPulse {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(240,91,91,.20); }
-  50%       { box-shadow: 0 0 0 6px rgba(240,91,91,.07); }
-}
-
-/* 섹션 공통 */
-.risk-section {
-  display: flex; flex-direction: column; justify-content: center;
-  padding: 12px 18px; gap: 6px; min-width: 0;
-}
-.risk-section-label {
-  font-size: 10px; font-weight: 700; color: var(--text-sub);
-  text-transform: uppercase; letter-spacing: .5px;
-}
-
-/* 구분선 */
-.risk-divider {
-  width: 1px; background: var(--border); flex-shrink: 0; margin: 8px 0;
-}
-
-/* ① 상태 섹션 */
-.risk-section-status { min-width: 160px; }
-
-.risk-kill-indicator {
-  display: inline-flex; align-items: center; gap: 7px;
-  font-size: 13px; font-weight: 700;
-  padding: 5px 12px; border-radius: 20px; width: fit-content;
-}
-/* 정상 — 초록 */
-.risk-kill-indicator.risk-safe    { background: #1a3a2a; color: var(--green); }
-/* 봇 중지 (kill_switch 아님) — 회색 */
-.risk-kill-indicator.risk-stopped { background: #2a2a3a; color: var(--text-sub); }
-/* 킬스위치 발동 — 빨강 + 점멸 */
-.risk-kill-indicator.risk-active  {
-  background: #2e0a0a; color: var(--red);
-  animation: dotBlink 1s step-end infinite;
-}
-@keyframes dotBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-
-.risk-kill-reason {
-  font-size: 11px; color: var(--red);
-  padding: 0 2px; line-height: 1.4;
-  max-width: 220px; word-break: keep-all;
-}
-
-/* ② 오늘 손익 섹션 */
-.risk-section-pnl { min-width: 160px; }
-
-.risk-pnl-row {
-  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
-}
-.risk-pnl-value   { font-size: 20px; font-weight: 800; }
-.risk-pnl-value.pnl-pos { color: var(--green); }
-.risk-pnl-value.pnl-neg { color: var(--red); }
-.risk-pnl-sep     { color: var(--border); font-size: 14px; }
-.risk-pnl-label-sm{ font-size: 11px; color: var(--text-sub); }
-.risk-pnl-limit   { font-size: 14px; font-weight: 700; color: var(--text-sub); }
-.risk-pnl-limit.limit-set { color: var(--yellow); }
-
-/* ③ 일일 손실 한도 설정 섹션 */
-.risk-section-limit { min-width: 280px; }
-
-.risk-limit-row {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-}
-.risk-limit-input {
-  width: 70px; padding: 6px 10px;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 6px; color: var(--text); font-size: 13px; font-weight: 700;
-  text-align: right;
-}
-.risk-limit-input:focus { outline: none; border-color: var(--yellow); }
-.risk-limit-unit { font-size: 13px; color: var(--text-sub); }
-.risk-limit-btn {
-  background: var(--bg3); border: 1px solid var(--border);
-  color: var(--text); padding: 5px 11px; border-radius: 6px;
-  font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
-  transition: border-color .15s, color .15s;
-}
-.risk-limit-btn:hover       { border-color: var(--yellow); color: var(--yellow); }
-.risk-limit-reset:hover     { border-color: var(--accent);  color: var(--accent); }
-
-/* ④ 버튼 섹션 */
-.risk-section-btns { margin-left: auto; padding-right: 16px; }
-
-.risk-btn-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-
-.risk-btn {
-  padding: 8px 16px; border-radius: 8px; font-size: 12px;
-  font-weight: 800; cursor: pointer; border: 2px solid transparent;
-  transition: opacity .15s, transform .1s; white-space: nowrap;
-}
-.risk-btn:active { transform: scale(.97); }
-
-/* 봇 정지 — 주황 */
-.risk-btn-kill {
-  background: #2e1a00; border-color: #f5a623; color: #f5a623;
-}
-.risk-btn-kill:hover { background: #3d2400; }
-
-/* 패닉 셀 — 빨강 (The Big Red Button) */
-.risk-btn-panic {
-  background: #3e0000; border-color: var(--red); color: var(--red);
-  box-shadow: 0 0 8px rgba(240,91,91,.30);
-}
-.risk-btn-panic:hover {
-  background: #5a0000;
-  box-shadow: 0 0 16px rgba(240,91,91,.55);
-}
-.risk-btn-panic:disabled { opacity: .5; cursor: not-allowed; }
-
-/* 재개 — 초록 */
-.risk-btn-resume {
-  background: #0d3a1a; border-color: var(--green); color: var(--green);
-}
-.risk-btn-resume:hover { background: #175228; }
-
-/* 봇 시작 — 밝은 초록 */
-.risk-btn-start {
-  background: #103a1a; border-color: #4cde80; color: #4cde80;
-  box-shadow: 0 0 6px rgba(76,222,128,.25);
-}
-.risk-btn-start:hover { background: #185a28; box-shadow: 0 0 14px rgba(76,222,128,.45); }
-.risk-btn-start:disabled { opacity: .5; cursor: not-allowed; }
-
-/* 봇 종료 — 회색/어두운 */
-.risk-btn-stop {
-  background: #2a2a2a; border-color: #888; color: #bbb;
-}
-.risk-btn-stop:hover { background: #3d3d3d; border-color: #aaa; color: #eee; }
-.risk-btn-stop:disabled { opacity: .5; cursor: not-allowed; }
-
+.trade-log-container .INFO    { color: #a0c4ff; }
+.trade-log-container .WARNING { color: var(--yellow); }
+.trade-log-container .ERROR   { color: var(--red); font-weight: 600; }
+.trade-log-container .DEBUG   { color: var(--text-sub); }
