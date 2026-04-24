@@ -8,10 +8,11 @@
     5. 전략 루프 무한 실행 – 장 운영시간에만 종목 순회, 장외엔 대기 (Ctrl-C로 중지).
 
 전략 통합 방식 (가중 점수):
-    - 기술적 분석   : 40%
-    - 감성 분석     : 30%
-    - 모멘텀 전략   : 20%
-    - 트럼프 시그널 : 10%
+    - 기술적 분석     : 35%
+    - 거래량 서프라이즈: 20%
+    - 모멘텀 전략     : 20%
+    - VIX 공포지수    : 15%
+    - 트럼프 시그널   : 10%
 
     composite >= +0.45 → BUY
     composite <= -0.45 → SELL
@@ -33,25 +34,87 @@ from config.settings import Settings, TickerInfo
 from src.api.auth import KISAuth
 from src.api.price import PriceAPI
 from src.api.order import OrderAPI
-from src.strategy.news_sentiment_llm import NewsSentimentStrategy
+from src.strategy.volume_surge_strategy import VolumeSurgeStrategy
 from src.strategy.deadcat_technical import DeadcatTechnicalStrategy
 from src.strategy.momentum_strategy import MomentumStrategy
+from src.strategy.vix_strategy import VIXStrategy
 from src.strategy.risk_manager import RiskManager
 from src.strategy.trump_monitor import TrumpMonitor, TrumpSignalStore
 from utils.logger import get_logger
 from utils.error_handler import TradingBotError
 
 # ---------------------------------------------------------------------------
-# 가중치 설정
+# 가중치 설정 (ADX Regime Filter에 의해 동적으로 스위칭됨)
+# VIX는 가중치 합산에서 제외 → 비대칭 하드 필터로 별도 처리
 # ---------------------------------------------------------------------------
+# ── 기본(중립 국면, 자동감지 fallback) ────────────────────────────────────
+# 기술40% + 거래량25% + 모멘텀25% + 트럼프10% = 100%
 _W_TECHNICAL  = 0.40
-_W_SENTIMENT  = 0.30
-_W_MOMENTUM   = 0.20
+_W_VOLUME     = 0.25
+_W_MOMENTUM   = 0.25
 _W_TRUMP      = 0.10
 
-# 복합 점수 임계값
-_BUY_COMPOSITE  =  0.45
-_SELL_COMPOSITE = -0.45
+# ── 추세장 (ADX > 25) ────────────────────────────────────────────────────
+_W_TREND_TECHNICAL = 0.18
+_W_TREND_VOLUME    = 0.22
+_W_TREND_MOMENTUM  = 0.50
+_W_TREND_TRUMP     = 0.10
+
+# ── 횡보장 (ADX < 20) ────────────────────────────────────────────────────
+_W_RANGE_TECHNICAL = 0.52
+_W_RANGE_VOLUME    = 0.23
+_W_RANGE_MOMENTUM  = 0.13
+_W_RANGE_TRUMP     = 0.12
+
+# ---------------------------------------------------------------------------
+# 종목 그룹별 메타 가중치 프로필
+# 각 그룹은 (중립, 추세장, 횡보장) 3벌의 가중치를 보유.
+# ADX 국면은 각 그룹 내에서 스위칭된다.
+# 형식: (w_tech, w_vol, w_mom, w_trump)
+# ---------------------------------------------------------------------------
+
+# ── large_cap: 대형 우량주 (M7, 코스피 시총 상위) ────────────────────────
+# 지표 신뢰도 높음 → 기술적 분석 + 모멘텀 중심, 거래량 수급 장난 적음
+_META_LARGE_NEUTRAL = (0.40, 0.15, 0.35, 0.10)   # 기술40+거래량15+모멘텀35+트럼프10
+_META_LARGE_TREND   = (0.20, 0.10, 0.60, 0.10)   # 추세장: 모멘텀 극대화
+_META_LARGE_RANGE   = (0.55, 0.15, 0.20, 0.10)   # 횡보장: 과매도/과매수 최대화
+
+# ── small_cap: 중소형주 / 테마주 ──────────────────────────────────────────
+# 수급(세력) + 거래량 터지는 브레이크아웃이 핵심, 기술적 분석 신뢰도 낮음
+_META_SMALL_NEUTRAL = (0.20, 0.40, 0.30, 0.10)   # 거래량40+모멘텀30+기술20+트럼프10
+_META_SMALL_TREND   = (0.10, 0.45, 0.35, 0.10)   # 추세장: 거래량 브레이크아웃 + 모멘텀
+_META_SMALL_RANGE   = (0.25, 0.45, 0.20, 0.10)   # 횡보장: 거래량 서프라이즈 최대화
+
+# ── etf: 지수 ETF / 레버리지 ETF ─────────────────────────────────────────
+# VIX·매크로(트럼프) 의존도 최고, 트럼프 직접 스코어 비중 35% 이상
+# 개별 종목 특성 無 → 거래량 의미 제한적
+_META_ETF_NEUTRAL   = (0.25, 0.10, 0.30, 0.35)   # 트럼프(매크로)35+모멘텀30+기술25+거래량10
+_META_ETF_TREND     = (0.15, 0.10, 0.40, 0.35)   # 추세장: 모멘텀 + 매크로
+_META_ETF_RANGE     = (0.35, 0.10, 0.20, 0.35)   # 횡보장: 기술적(평균회귀) + 매크로
+
+# ── ETF 전용 VIX 강화 파라미터 ───────────────────────────────────────────
+# ETF는 VIX 민감도 상향: 경계 구간 시작을 20으로 낮춤, 차단 구간도 25로 낮춤
+_VIX_ETF_CAUTION   = 20.0   # ETF 전용 BUY 30% 삭감 구간 시작
+_VIX_ETF_DANGER    = 25.0   # ETF 전용 BUY 완전 차단 구간
+
+# ADX 국면 경계값
+_ADX_TREND_THRESHOLD = 25.0
+_ADX_RANGE_THRESHOLD = 20.0
+
+# ---------------------------------------------------------------------------
+# VIX 비대칭 하드 필터 설정
+# ---------------------------------------------------------------------------
+_VIX_CAUTION_THRESHOLD = 25.0   # 이상: BUY 점수 30% 삭감
+_VIX_DANGER_THRESHOLD  = 30.0   # 이상: 신규 BUY 완전 차단, SELL 30% 강화
+_VIX_PANIC_THRESHOLD   = 40.0   # 이상: contrarian 역발상 (VIXStrategy 내부 처리)
+
+# 복합 점수 임계값 (낮출수록 거래 빈도 증가, 높일수록 신뢰도 증가)
+_BUY_COMPOSITE  =  0.30
+_SELL_COMPOSITE = -0.30
+
+# 방향성 일치 필터: 메인 전략(기술/거래량/모멘텀) 중 몇 개 이상 같은 방향이어야 체결 허용
+# 2 = 3개 중 2개 이상 일치 (기본값, 휩소 방지)
+_MIN_STRATEGY_AGREEMENT = 2
 
 # 일일 손실 한도 (원) – 환경 변수로 덮어쓰기 가능
 _DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "500000"))
@@ -92,35 +155,35 @@ def _http_post(path: str, payload: dict) -> bool:
 
 def update_bot_signal(
     ticker: str,
-    sentiment: str,
+    volume: str,
     technical: str,
     decision: str,
     price: str,
     momentum: str = "HOLD",
     composite_score: float = 0.0,
     tech_score: float = 0.0,
-    sentiment_score: float = 0.0,
+    volume_score: float = 0.0,
     momentum_score: float = 0.0,
     tech_breakdown: dict | None = None,
 ):
     if _WEB_MODE == "direct" and _web_update_signal:
         _web_update_signal(
-            ticker, sentiment, technical, decision, price,
+            ticker, volume, technical, decision, price,
             momentum=momentum,
             composite_score=composite_score,
             tech_score=tech_score,
-            sentiment_score=sentiment_score,
+            sentiment_score=volume_score,  # 기존 sentiment_score 필드 재사용
             momentum_score=momentum_score,
             tech_breakdown=tech_breakdown,
         )
     else:
         _http_post("/api/bot/signal", {
-            "ticker": ticker, "sentiment": sentiment,
+            "ticker": ticker, "sentiment": volume,
             "technical": technical, "decision": decision, "price": price,
             "momentum": momentum,
             "composite_score": composite_score,
             "tech_score": tech_score,
-            "sentiment_score": sentiment_score,
+            "sentiment_score": volume_score,
             "momentum_score": momentum_score,
             "tech_breakdown": tech_breakdown or {},
         })
@@ -223,39 +286,201 @@ def _signal_to_num(signal: str) -> float:
     return 0.0
 
 
+def _calc_adx(ohlcv_df: "pd.DataFrame", period: int = 14) -> float:
+    """OHLCV DataFrame에서 최신 ADX 값을 계산한다.
+
+    Returns:
+        float: 최신 ADX 값. 계산 불가 시 0.0 반환.
+    """
+    try:
+        import numpy as np
+        close = ohlcv_df["close"].astype(float).reset_index(drop=True)
+        high  = ohlcv_df["high"].astype(float).reset_index(drop=True)
+        low   = ohlcv_df["low"].astype(float).reset_index(drop=True)
+
+        if len(close) < period * 2:
+            return 0.0
+
+        prev_c   = close.shift(1)
+        tr       = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
+        up_move  = high.diff()
+        dn_move  = -low.diff()
+        dm_plus  = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+        dm_minus = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+
+        atr_s    = tr.ewm(span=period, adjust=False).mean()
+        di_plus  = 100 * pd.Series(dm_plus,  index=close.index).ewm(span=period, adjust=False).mean() / atr_s.replace(0, float("nan"))
+        di_minus = 100 * pd.Series(dm_minus, index=close.index).ewm(span=period, adjust=False).mean() / atr_s.replace(0, float("nan"))
+        dx       = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, float("nan"))
+        adx      = dx.ewm(span=period, adjust=False).mean()
+
+        val = float(adx.iloc[-1])
+        return val if not (val != val) else 0.0   # NaN guard
+    except Exception:
+        return 0.0
+
+
+def _get_regime_weights(adx: float, group: str = "small_cap") -> tuple[float, float, float, float, str]:
+    """ADX 값과 종목 그룹에 따라 최적 가중치를 반환한다.
+
+    종목 그룹별 메타 가중치 프로필에 ADX Regime Filter를 조합한다.
+
+    Returns:
+        (w_tech, w_vol, w_mom, w_trump, regime_label)
+    """
+    # 그룹별 (중립, 추세장, 횡보장) 가중치 매핑
+    _GROUP_WEIGHTS = {
+        "large_cap": (_META_LARGE_NEUTRAL, _META_LARGE_TREND, _META_LARGE_RANGE),
+        "small_cap": (_META_SMALL_NEUTRAL, _META_SMALL_TREND, _META_SMALL_RANGE),
+        "etf":       (_META_ETF_NEUTRAL,   _META_ETF_TREND,   _META_ETF_RANGE),
+    }
+    neutral_w, trend_w, range_w = _GROUP_WEIGHTS.get(
+        group, (_META_SMALL_NEUTRAL, _META_SMALL_TREND, _META_SMALL_RANGE)
+    )
+
+    group_label = {"large_cap": "대형우량주", "small_cap": "중소형/테마", "etf": "지수ETF"}.get(group, group)
+
+    if adx >= _ADX_TREND_THRESHOLD:
+        return (*trend_w, f"추세장(ADX={adx:.1f}≥{_ADX_TREND_THRESHOLD})[{group_label}]")
+    if adx <= _ADX_RANGE_THRESHOLD and adx > 0:
+        return (*range_w, f"횡보장(ADX={adx:.1f}≤{_ADX_RANGE_THRESHOLD})[{group_label}]")
+    return (*neutral_w, f"중립(ADX={adx:.1f})[{group_label}]")
+
+
+def _apply_vix_filter(composite: float, vix: float, group: str = "small_cap") -> tuple[float, str]:
+    """VIX 비대칭 하드 필터를 적용한다.
+
+    ETF 그룹은 VIX 민감도를 상향(경계 VIX>20, 차단 VIX>25)하여
+    매크로 충격을 일반 종목보다 먼저 반영한다.
+
+    Rules (일반):
+        VIX < 25          : 개입 없음
+        25 ≤ VIX < 30     : BUY 30% 삭감
+        30 ≤ VIX < 40     : 신규 BUY 완전 차단, SELL 30% 강화
+        VIX ≥ 40          : contrarian 역발상 허용
+
+    Rules (ETF 강화):
+        VIX < 20          : 개입 없음
+        20 ≤ VIX < 25     : BUY 30% 삭감
+        25 ≤ VIX < 40     : 신규 BUY 완전 차단, SELL 30% 강화
+        VIX ≥ 40          : contrarian 역발상 허용
+    """
+    if vix <= 0:
+        return composite, "VIX불명(필터스킵)"
+
+    # ETF는 VIX 임계값 하향 적용
+    caution_thr = _VIX_ETF_CAUTION if group == "etf" else _VIX_CAUTION_THRESHOLD
+    danger_thr  = _VIX_ETF_DANGER  if group == "etf" else _VIX_DANGER_THRESHOLD
+    group_tag   = "[ETF강화]" if group == "etf" else ""
+
+    if vix >= _VIX_PANIC_THRESHOLD:
+        return composite, f"VIX패닉({vix:.1f}≥40, 역발상허용){group_tag}"
+
+    if vix >= danger_thr:
+        if composite > 0:
+            adjusted = 0.0
+            label = f"VIX공포({vix:.1f}≥{danger_thr:.0f}, BUY→HOLD강제){group_tag}"
+        elif composite < 0:
+            adjusted = max(-1.0, composite * 1.30)
+            label = f"VIX공포({vix:.1f}≥{danger_thr:.0f}, SELL×1.3강화){group_tag}"
+        else:
+            adjusted = composite
+            label = f"VIX공포({vix:.1f}≥{danger_thr:.0f}){group_tag}"
+        return adjusted, label
+
+    if vix >= caution_thr:
+        if composite > 0:
+            adjusted = composite * 0.70
+            label = f"VIX경계({vix:.1f}≥{caution_thr:.0f}, BUY×0.7){group_tag}"
+        else:
+            adjusted = composite
+            label = f"VIX경계({vix:.1f}≥{caution_thr:.0f}){group_tag}"
+        return adjusted, label
+
+    return composite, f"VIX정상({vix:.1f}<{caution_thr:.0f}){group_tag}"
+
+
 def _decide_order(
-    sentiment_signal: str,
+    volume_signal: str,
     technical_signal: str,
     trump_signal: str,
     momentum_signal: str = "HOLD",
-) -> tuple[str, float]:
-    """네 가지 시그널을 가중 점수로 통합하여 최종 매매 결정을 반환한다.
+    vix_value: float = 0.0,
+    adx: float = 0.0,
+    tech_score: float = 0.0,
+    vol_score: float = 0.0,
+    mom_score: float = 0.0,
+    trump_score: float = 0.0,
+    group: str = "small_cap",
+) -> tuple[str, float, str]:
+    """시그널을 그룹별 메타 가중치 + ADX 동적 스위칭 + VIX 하드 필터로 통합한다.
+
+    개선사항:
+        4. tanh 정규화된 연속 점수 사용 (이진 +1/-1/0 대신)
+        5. 종목 그룹(large_cap/small_cap/etf)별 메타 가중치 프로필 적용
+           - large_cap : 기술/모멘텀 중심
+           - small_cap : 거래량 서프라이즈/모멘텀 중심
+           - etf       : 트럼프(매크로)/모멘텀 중심 + VIX 강화 필터
 
     Returns:
-        (decision, composite_score): 결정 문자열 + 복합 점수
+        (decision, composite_score, regime_label)
     """
+    # 1단계: 그룹 + ADX 기반 동적 가중치 결정
+    w_tech, w_vol, w_mom, w_trump, regime = _get_regime_weights(adx, group)
+
+    # 2단계: tanh 정규화된 연속 점수로 가중 합산 (VIX 제외)
+    import numpy as _np
+    trump_norm = float(_np.tanh(trump_score / 1.0)) if trump_score != 0.0 else _signal_to_num(trump_signal)
+
     composite = (
-        _signal_to_num(technical_signal)  * _W_TECHNICAL
-        + _signal_to_num(sentiment_signal) * _W_SENTIMENT
-        + _signal_to_num(momentum_signal)  * _W_MOMENTUM
-        + _signal_to_num(trump_signal)     * _W_TRUMP
+        tech_score  * w_tech
+        + vol_score * w_vol
+        + mom_score * w_mom
+        + trump_norm * w_trump
     )
 
     logger.info(
-        "복합점수=%.3f | 기술(%s)×%.0f%% + 감성(%s)×%.0f%% + "
-        "모멘텀(%s)×%.0f%% + 트럼프(%s)×%.0f%%",
-        composite,
-        technical_signal,  _W_TECHNICAL * 100,
-        sentiment_signal,  _W_SENTIMENT * 100,
-        momentum_signal,   _W_MOMENTUM  * 100,
-        trump_signal,      _W_TRUMP     * 100,
+        "📊 [%s] 연속점수합산=%.3f | 기술(%.3f)×%.0f%% + 거래량(%.3f)×%.0f%% + "
+        "모멘텀(%.3f)×%.0f%% + 트럼프(%.3f)×%.0f%%",
+        regime, composite,
+        tech_score,  w_tech  * 100,
+        vol_score,   w_vol   * 100,
+        mom_score,   w_mom   * 100,
+        trump_norm,  w_trump * 100,
     )
 
+    # 3단계: VIX 비대칭 하드 필터 (ETF는 강화된 임계값 적용)
+    composite, vix_label = _apply_vix_filter(composite, vix_value, group)
+    logger.info("🔴 VIX 필터 적용: %s → 최종복합점수=%.3f", vix_label, composite)
+
+    # 4단계: 방향성 일치 필터 (메인 전략 3개 중 최소 N개 동방향)
+    main_signals = [
+        _signal_to_num(technical_signal),
+        _signal_to_num(volume_signal),
+        _signal_to_num(momentum_signal),
+    ]
+
     if composite >= _BUY_COMPOSITE:
-        return "BUY", composite
+        buy_agree = sum(1 for s in main_signals if s > 0)
+        if buy_agree >= _MIN_STRATEGY_AGREEMENT:
+            logger.info("✅ 방향성 일치 필터 통과 (BUY 동의 %d/%d개)", buy_agree, len(main_signals))
+            return "BUY", composite, f"{regime} | {vix_label} | 일치{buy_agree}/3"
+        else:
+            logger.info("⛔ 방향성 일치 필터 차단 (BUY 동의 %d/%d개 < 필요 %d개) → HOLD",
+                        buy_agree, len(main_signals), _MIN_STRATEGY_AGREEMENT)
+            return "HOLD", composite, f"{regime} | {vix_label} | BUY차단(일치부족{buy_agree}/3)"
+
     if composite <= _SELL_COMPOSITE:
-        return "SELL", composite
-    return "HOLD", composite
+        sell_agree = sum(1 for s in main_signals if s < 0)
+        if sell_agree >= _MIN_STRATEGY_AGREEMENT:
+            logger.info("✅ 방향성 일치 필터 통과 (SELL 동의 %d/%d개)", sell_agree, len(main_signals))
+            return "SELL", composite, f"{regime} | {vix_label} | 일치{sell_agree}/3"
+        else:
+            logger.info("⛔ 방향성 일치 필터 차단 (SELL 동의 %d/%d개 < 필요 %d개) → HOLD",
+                        sell_agree, len(main_signals), _MIN_STRATEGY_AGREEMENT)
+            return "HOLD", composite, f"{regime} | {vix_label} | SELL차단(일치부족{sell_agree}/3)"
+
+    return "HOLD", composite, f"{regime} | {vix_label}"
 
 
 # ---------------------------------------------------------------------------
@@ -270,13 +495,14 @@ def run_strategy_loop(
     """전체 종목 리스트를 순회하며 전략을 실행하고 매매 시그널을 처리한다."""
     strategies = {
         t.code: {
-            "sentiment": NewsSentimentStrategy(ticker_info=t),
+            "volume":    VolumeSurgeStrategy(price_api=price_api, ticker_info=t),
             "technical": DeadcatTechnicalStrategy(price_api=price_api, ticker_info=t),
             "momentum":  MomentumStrategy(price_api=price_api, ticker_info=t),
         }
         for t in tickers
     }
     trump_store = TrumpSignalStore()
+    vix_strategy = VIXStrategy()   # VIX는 종목 공통 – 1개만 생성
     risk = RiskManager()
 
     logger.info(
@@ -322,6 +548,21 @@ def run_strategy_loop(
         trump_signal = trump_store.latest_signal
         trump_score  = trump_store.latest_score
         logger.info("🇺🇸 현재 트럼프 시그널: %s (score=%.3f)", trump_signal, trump_score)
+
+        # ---- VIX 값 조회 (종목 공통, 30분 캐싱) – 하드 필터용 ----
+        vix_value = vix_strategy.fetch_vix() or 0.0
+        vix_level = (
+            "극도탐욕" if vix_value < 13 else
+            "안정" if vix_value < 20 else
+            "중립" if vix_value < 25 else
+            "경계" if vix_value < 30 else
+            "공포" if vix_value < 40 else "패닉"
+        )
+        logger.info("😨 VIX=%.2f (%s) | 하드필터: %s",
+            vix_value, vix_level,
+            "BUY차단+SELL강화" if vix_value >= 30 else
+            "BUY-30%삭감" if vix_value >= 25 else "정상"
+        )
 
         # ---- 전체 종목 순회 ----
         for t in tickers:
@@ -369,13 +610,21 @@ def run_strategy_loop(
                         continue
 
                 # ---- 전략 시그널 생성 (OHLCV는 1회만 조회해 공유) ----
-                # OHLCV 사전 조회 → technical·momentum 전략에 직접 주입하여 중복 API 호출 방지
+                # OHLCV 사전 조회 → 모든 전략에 직접 주입하여 중복 API 호출 방지
                 ohlcv_df = price_api.get_ohlcv(t, lookback_days=120)
 
-                sentiment_signal, sent_score = strategies[t.code]["sentiment"].generate_signal_with_score()
-                logger.info("[%s] 감성 시그널: %s (점수=%.3f)", t.code, sentiment_signal, sent_score)
+                # ADX 계산 (Regime Filter – 추세장/횡보장 판단)
+                current_adx = _calc_adx(ohlcv_df)
+                logger.info("[%s] ADX=%.1f → %s",
+                    t.code, current_adx,
+                    "추세장" if current_adx >= _ADX_TREND_THRESHOLD
+                    else ("횡보장" if 0 < current_adx <= _ADX_RANGE_THRESHOLD else "중립"))
 
-                # OHLCV를 전략 내부에 주입 (fetch_ohlcv 재호출 방지)
+                # 거래량 서프라이즈 시그널
+                strategies[t.code]["volume"]._cached_ohlcv = ohlcv_df
+                volume_signal, vol_score, vol_breakdown = strategies[t.code]["volume"].generate_signal_with_score()
+                logger.info("[%s] 거래량 시그널: %s (점수=%.3f)", t.code, volume_signal, vol_score)
+
                 strategies[t.code]["technical"]._cached_ohlcv = ohlcv_df
                 technical_signal, tech_score, tech_breakdown = strategies[t.code]["technical"].generate_signal_with_score()
                 logger.info("[%s] 기술 시그널: %s (점수=%.2f)", t.code, technical_signal, tech_score)
@@ -384,28 +633,34 @@ def run_strategy_loop(
                 momentum_signal, mom_score, _ = strategies[t.code]["momentum"].generate_signal_with_score()
                 logger.info("[%s] 모멘텀 시그널: %s (점수=%.2f)", t.code, momentum_signal, mom_score)
 
-                # ---- 가중 통합 결정 ----
-                decision, composite = _decide_order(
-                    sentiment_signal, technical_signal, trump_signal, momentum_signal,
+                # ---- 가중 통합 결정 (그룹별 메타 가중치 + ADX 동적 스위칭 + VIX 하드 필터) ----
+                decision, composite, regime = _decide_order(
+                    volume_signal, technical_signal, trump_signal,
+                    momentum_signal, vix_value=vix_value, adx=current_adx,
+                    tech_score=tech_score,
+                    vol_score=vol_score,
+                    mom_score=mom_score,
+                    trump_score=trump_score,
+                    group=t.group,
                 )
                 logger.info(
-                    "[%s] 최종결정: %s | composite=%.3f "
-                    "(감성=%s, 기술=%s, 모멘텀=%s, 트럼프=%s)",
-                    t.code, decision, composite,
-                    sentiment_signal, technical_signal, momentum_signal, trump_signal,
+                    "[%s|%s] 최종결정: %s | composite=%.3f | %s "
+                    "(거래량=%s, 기술=%s, 모멘텀=%s, 트럼프=%s)",
+                    t.code, t.group, decision, composite, regime,
+                    volume_signal, technical_signal, momentum_signal, trump_signal,
                 )
 
                 # 웹 대시보드 업데이트 (점수 포함)
                 update_bot_signal(
                     ticker=t.code,
-                    sentiment=sentiment_signal,
+                    volume=volume_signal,
                     technical=technical_signal,
                     decision=decision,
                     price=str(current_price),
                     momentum=momentum_signal,
                     composite_score=composite,
                     tech_score=tech_score,
-                    sentiment_score=sent_score,
+                    volume_score=vol_score,
                     momentum_score=mom_score,
                     tech_breakdown=tech_breakdown,
                 )
@@ -469,12 +724,14 @@ def main() -> None:
         logger.error("설정 오류: %s", exc)
         raise SystemExit(1) from exc
 
-    logger.info("매매 대상 종목: %s", [(t.code, t.exchange) for t in Settings.TARGET_TICKERS])
+    logger.info("매매 대상 종목: %s",
+                [(t.code, t.exchange, t.group) for t in Settings.TARGET_TICKERS])
     logger.info("종목당 주문 수량: %d주", Settings.ORDER_QUANTITY)
     logger.info("실행 주기: %d초", Settings.STRATEGY_INTERVAL_SECONDS)
     logger.info(
-        "전략 가중치: 기술=%.0f%%, 감성=%.0f%%, 모멘텀=%.0f%%, 트럼프=%.0f%%",
-        _W_TECHNICAL*100, _W_SENTIMENT*100, _W_MOMENTUM*100, _W_TRUMP*100,
+        "전략 가중치(기본): 기술=%.0f%%, 거래량=%.0f%%, 모멘텀=%.0f%%, 트럼프=%.0f%% "
+        "| VIX 하드 필터: <25 정상 / 25~30 BUY-30%% / ≥30 BUY차단+SELL강화 / ≥40 역발상",
+        _W_TECHNICAL*100, _W_VOLUME*100, _W_MOMENTUM*100, _W_TRUMP*100,
     )
 
     # 인증

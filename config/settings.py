@@ -7,6 +7,66 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+
+# ---------------------------------------------------------------------------
+# 종목 그룹 자동 감지 기준
+# ---------------------------------------------------------------------------
+# 지수 ETF: 레버리지/인버스 ETF, 대표 지수 ETF
+_ETF_TICKERS = frozenset({
+    "TQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UPRO", "SPXU", "TECL",
+    "QQQ", "SPY", "IWM", "DIA", "EEM", "GLD", "SLV", "TLT", "HYG",
+    "ARKK", "ARKG", "ARKW", "ARKF",
+    # 국내 ETF (KODEX, TIGER 등) – 숫자 6자리로 구분 어려우므로 명시 등록
+    "069500", "102110", "252670", "233740", "122630", "114800",
+})
+
+# 대형 우량주: M7 + 코스피 시총 상위 + 주요 빅테크
+_LARGE_CAP_TICKERS = frozenset({
+    # 미국 M7
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA",
+    # 미국 기타 대형주
+    "TSLA", "NFLX", "AMD", "INTC", "BABA", "TSM", "ORCL", "CSCO",
+    "JPM", "GS", "BAC", "XOM", "CVX", "JNJ", "PFE", "WMT", "KO",
+    # 한국 시총 상위 (~30위권)
+    "005930",  # 삼성전자
+    "000660",  # SK하이닉스
+    "035420",  # NAVER
+    "005380",  # 현대차
+    "000270",  # 기아
+    "068270",  # 셀트리온
+    "051910",  # LG화학
+    "035720",  # 카카오
+    "105560",  # KB금융
+    "055550",  # 신한지주
+    "028260",  # 삼성물산
+    "012330",  # 현대모비스
+    "003670",  # 포스코홀딩스
+    "207940",  # 삼성바이오로직스
+    "017670",  # SK텔레콤
+    "066570",  # LG전자
+    "032830",  # 삼성생명
+    "034730",  # SK
+    "015760",  # 한국전력
+    "011200",  # HMM
+})
+
+
+def _auto_detect_group(code: str) -> str:
+    """종목 코드로 그룹을 자동 감지한다.
+
+    Returns:
+        "etf"       – 지수 ETF / 레버리지 ETF
+        "large_cap" – 대형 우량주 (M7, 코스피 시총 상위)
+        "small_cap" – 중소형주 / 테마주 (나머지)
+    """
+    upper = code.upper()
+    if upper in _ETF_TICKERS:
+        return "etf"
+    if upper in _LARGE_CAP_TICKERS:
+        return "large_cap"
+    return "small_cap"
+
+
 @dataclass
 class TickerInfo:
     """종목 정보를 담는 데이터 클래스."""
@@ -15,6 +75,11 @@ class TickerInfo:
     is_domestic: bool
     qty: int = 1          # 종목별 1회 주문 수량 (0이면 글로벌 ORDER_QUANTITY 사용)
     interval: int = 0     # 종목별 전략 루프 주기(초) (0이면 글로벌 STRATEGY_INTERVAL_SECONDS 사용)
+    group: str = "auto"   # "large_cap" | "small_cap" | "etf" | "auto"(자동감지)
+
+    def __post_init__(self) -> None:
+        if self.group == "auto":
+            self.group = _auto_detect_group(self.code)
 
 
 # KIS API 해외 거래소 코드표
@@ -37,15 +102,30 @@ def _parse_tickers(raw: str) -> list[TickerInfo]:
     """쉼표로 구분된 종목 문자열을 TickerInfo 리스트로 파싱한다.
 
     형식 (콜론 구분):
-        코드[:거래소[:수량[:주기(초)]]]
+        코드[:거래소[:수량[:주기(초)[:그룹]]]]
+
+    그룹 값:
+        L / large_cap  → 대형 우량주 (M7, 코스피 시총 상위)
+        S / small_cap  → 중소형주 / 테마주
+        E / etf        → 지수 ETF / 레버리지 ETF
+        auto (생략)    → 코드로 자동 감지
 
     예시:
-        005930                    → 삼성전자, KRX, qty=0(글로벌), interval=0(글로벌)
-        005930:KRX                → 위와 동일
-        005930:KRX:3              → 수량 3주
-        005930:KRX:3:1800         → 수량 3주, 주기 1800초
-        AAPL:NAS:1:3600           → 나스닥 AAPL, 1주, 3600초
+        005930                      → 삼성전자, KRX, qty=0, 자동감지(large_cap)
+        005930:KRX                  → 위와 동일
+        005930:KRX:3                → 수량 3주
+        005930:KRX:3:1800           → 수량 3주, 주기 1800초
+        AAPL:NAS:1:3600             → 나스닥 AAPL, 1주, 3600초 (자동감지 → large_cap)
+        TQQQ:NAS:1:3600:E          → ETF 그룹 명시
+        012345:KRX:1:0:S           → 중소형 테마주 명시
     """
+    # 그룹 약어 → 정규명 변환
+    _GROUP_ALIAS = {
+        "l": "large_cap", "large": "large_cap", "large_cap": "large_cap",
+        "s": "small_cap", "small": "small_cap", "small_cap": "small_cap",
+        "e": "etf",       "etf": "etf",
+    }
+
     result: list[TickerInfo] = []
     for item in raw.split(","):
         parts = [p.strip() for p in item.split(":")]
@@ -63,10 +143,14 @@ def _parse_tickers(raw: str) -> list[TickerInfo]:
         except ValueError:
             interval = 0
 
+        raw_group = parts[4].strip().lower() if len(parts) > 4 and parts[4] else "auto"
+        group = _GROUP_ALIAS.get(raw_group, "auto")
+
         is_domestic = bool(re.fullmatch(r"\d{6}", code))
         result.append(TickerInfo(
             code=code, exchange=exchange,
             is_domestic=is_domestic, qty=qty, interval=interval,
+            group=group,
         ))
 
     return result
@@ -102,18 +186,15 @@ class Settings:
         return cls.REAL_APP_KEY, cls.REAL_APP_SECRET, cls.REAL_ACCOUNT_NUMBER
 
     @classmethod
-    @property
-    def APP_KEY(cls) -> str:
+    def get_app_key(cls) -> str:
         return cls._active()[0]
 
     @classmethod
-    @property
-    def APP_SECRET(cls) -> str:
+    def get_app_secret(cls) -> str:
         return cls._active()[1]
 
     @classmethod
-    @property
-    def ACCOUNT_NUMBER(cls) -> str:
+    def get_account_number(cls) -> str:
         return cls._active()[2]
 
     # ── LLM 제공자 설정 ──────────────────────────────────────────
