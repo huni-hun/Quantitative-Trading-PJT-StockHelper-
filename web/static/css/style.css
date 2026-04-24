@@ -15,6 +15,8 @@
   --text-sub:   #8892a4;
   --sidebar-w:  220px;
   --radius:     10px;
+  --card-bg:    #1e222d;
+  --text-main:  #ffffff;
 }
 
 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; font-size: 14px; }
@@ -748,8 +750,7 @@ input:checked + .slider::before { transform: translateX(20px); background: #fff;
 }
 .bt-chart-box canvas { width: 100% !important; height: 100% !important; }
 
-/* ══════════════════════════════════════════════════
-   알림 설정 탭
+/* ── 알림 설정 탭
    ══════════════════════════════════════════════════ */
 
 /* 3열 레이아웃 */
@@ -872,3 +873,187 @@ input:checked + .slider::before { transform: translateX(20px); background: #fff;
 .trade-log-container .WARNING { color: var(--yellow); }
 .trade-log-container .ERROR   { color: var(--red); font-weight: 600; }
 .trade-log-container .DEBUG   { color: var(--text-sub); }
+
+/* ── 리스크 관리 배너 ──────────────────────────── */
+.risk-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.risk-banner-alert {
+  border-color: var(--red);
+  background: rgba(240, 91, 91, 0.1);
+  animation: risk-pulse 1.5s infinite;
+}
+
+@keyframes risk-pulse {
+  0%, 100% { border-color: var(--red); }
+  50%       { border-color: rgba(240, 91, 91, 0.3); }
+}
+
+.risk-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.risk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+.risk-section-label {
+  font-size: 11px;
+  color: var(--text-sub);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 봇 상태 인디케이터 */
+.risk-kill-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.risk-kill-indicator.risk-safe   { color: var(--green); }
+.risk-kill-indicator.risk-killed { color: var(--red); }
+.risk-kill-indicator.risk-panic  { color: var(--yellow); }
+
+.risk-kill-reason {
+  font-size: 11px;
+  color: var(--red);
+  margin-top: 2px;
+}
+
+/* 손익 표시 */
+.risk-pnl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.risk-pnl-value {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.risk-pnl-sep,
+.risk-pnl-label-sm {
+  color: var(--text-sub);
+  font-size: 11px;
+}
+
+.risk-pnl-limit {
+  font-size: 13px;
+  color: var(--yellow);
+}
+
+/* 한도 설정 입력 */
+.risk-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.risk-limit-input {
+  width: 70px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 13px;
+  text-align: right;
+}
+
+.risk-limit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.risk-limit-unit {
+  font-size: 13px;
+  color: var(--text-sub);
+}
+
+/* 버튼 공통 */
+.risk-btn-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.risk-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.risk-btn:hover  { opacity: 0.85; transform: translateY(-1px); }
+.risk-btn:active { transform: translateY(0); }
+
+.risk-btn-start  { background: var(--green);   color: #000; }
+.risk-btn-stop   { background: var(--text-sub); color: #000; }
+.risk-btn-kill   { background: var(--red);      color: #fff; }
+.risk-btn-panic  { background: var(--yellow);   color: #000; }
+.risk-btn-resume { background: var(--accent);   color: #fff; }
+.risk-limit-btn  { background: var(--accent);   color: #fff; border-radius: 6px; border: none; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.risk-limit-reset { background: var(--bg3); color: var(--text); border: 1px solid var(--border); margin-left: 2px; }
+
+/* ── 보유종목 포트폴리오 요약 카드 ────────────────────────────────────── */
+.portfolio-summary {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.port-card {
+  flex: 1 1 160px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  min-width: 150px;
+}
+
+.port-card-rate {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, var(--card-bg) 60%, rgba(99,179,237,0.06));
+}
+
+.port-label {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.port-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-main);
+  letter-spacing: -0.5px;
+}
+
+.port-rate {
+  font-size: 24px;
+}

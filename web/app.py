@@ -1238,107 +1238,290 @@ def api_analytics():
 
 def _run_backtest_on_df(
     df: "pd.DataFrame",
-    rsi_period: int,
-    rsi_oversold: float,
-    rsi_overbought: float,
-    bb_period: int,
-    bb_std: float,
-    initial_cash: float,
-    order_qty: int,
+    # 기술 전략 파라미터
+    rsi_period: int       = 14,
+    rsi_oversold: float   = 30.0,
+    rsi_overbought: float = 70.0,
+    bb_period: int        = 20,
+    bb_std: float         = 2.0,
+    tech_buy_thr: float   = 2.0,
+    tech_sell_thr: float  = -2.0,
+    # 거래량 서프라이즈 파라미터
+    vsr_window: int    = 20,
+    obv_window: int    = 14,
+    vwap_window: int   = 20,
+    vol_threshold: float = 0.25,
+    # 모멘텀 파라미터
+    ema_fast: int      = 20,
+    ema_slow: int      = 50,
+    mom_period: int    = 20,
+    high_window: int   = 52,
+    mom_buy_thr: float = 2.5,
+    mom_sell_thr: float= -2.5,
+    # 복합 임계값
+    composite_buy: float  = 0.40,
+    composite_sell: float = -0.40,
+    # 공통
+    initial_cash: float   = 10_000_000,
+    order_qty: int        = 1,
 ) -> dict:
-    """주어진 OHLCV DataFrame과 파라미터로 백테스트를 수행하고 결과를 반환한다.
+    """실제 전략(기술 40% + 거래량서프라이즈 25% + 모멘텀 25%)으로 백테스트를 수행한다.
 
-    단순 시장가 매매 시뮬레이션 (슬리피지·수수료 미적용).
-    매수/매도 중복 방지: 이미 보유 중이면 매수 안 함, 미보유면 매도 안 함.
+    트럼프 시그널(10%)은 과거 데이터 없으므로 제외,
+    나머지 세 전략으로 재배분 (기술 44.4% + 거래량 27.8% + 모멘텀 27.8%).
     """
     import numpy as np
     import pandas as pd
 
-    close = df["close"].astype(float).reset_index(drop=True)
-    dates = df["date"].tolist()
+    df = df.reset_index(drop=True)
+    close  = df["close"].astype(float)
+    high   = df["high"].astype(float)
+    low    = df["low"].astype(float)
+    volume = df["volume"].astype(float)
+    dates  = df["date"].tolist()
+    n      = len(close)
 
-    # ── RSI 계산 (Wilder EWM) ──────────────────────────────────────────
-    if len(close) < rsi_period + 1:
-        return {"error": f"데이터 부족: {len(close)}일 (RSI에 최소 {rsi_period+1}일 필요)"}
-    delta     = close.diff()
-    gain      = delta.clip(lower=0)
-    loss      = (-delta).clip(lower=0)
-    avg_gain  = gain.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss  = loss.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs        = avg_gain / avg_loss.replace(0, np.nan)
-    rsi_s     = (100 - 100 / (1 + rs)).fillna(50)
+    min_bars = max(rsi_period, bb_period, ema_slow, high_window, vsr_window, obv_window) + 5
+    if n < min_bars:
+        return {"error": f"데이터 부족: {n}일 (최소 {min_bars}일 필요)"}
 
-    # ── 볼린저 밴드 ────────────────────────────────────────────────────
-    mid   = close.rolling(bb_period).mean()
-    std_s = close.rolling(bb_period).std(ddof=0)
-    upper = (mid + bb_std * std_s).bfill().ffill()
-    lower = (mid - bb_std * std_s).bfill().ffill()
+    # ══════════════════════════════════════════════════
+    # 1. 기술 지표 전체 시리즈 계산
+    # ══════════════════════════════════════════════════
+    # RSI
+    delta    = close.diff()
+    avg_gain = delta.clip(lower=0).ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
+    avg_loss = (-delta).clip(lower=0).ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
+    rsi_s    = (100 - 100 / (1 + avg_gain / avg_loss.replace(0, np.nan))).fillna(50)
 
-    # ── 시뮬레이션 ─────────────────────────────────────────────────────
+    # 볼린저 밴드
+    bb_mid   = close.rolling(bb_period).mean()
+    bb_upper = (bb_mid + bb_std * close.rolling(bb_period).std(ddof=0)).ffill().bfill()
+    bb_lower = (bb_mid - bb_std * close.rolling(bb_period).std(ddof=0)).ffill().bfill()
+
+    # MACD
+    macd_fast_s, macd_slow_s = 12, 26
+    ema_fast_macd = close.ewm(span=macd_fast_s, adjust=False).mean()
+    ema_slow_macd = close.ewm(span=macd_slow_s, adjust=False).mean()
+    macd_line  = ema_fast_macd - ema_slow_macd
+    macd_sig   = macd_line.ewm(span=9, adjust=False).mean()
+
+    # EMA 추세
+    ema20_s  = close.ewm(span=20,  adjust=False).mean()
+    ema50_s  = close.ewm(span=50,  adjust=False).mean()
+    ema200_s = close.ewm(span=200, adjust=False).mean()
+
+    # 거래량 평균 (기술용)
+    vol_avg20 = volume.rolling(21).mean().shift(1)
+
+    # Stochastic RSI
+    rsi_min = rsi_s.rolling(rsi_period).min()
+    rsi_max = rsi_s.rolling(rsi_period).max()
+    stoch_k = ((rsi_s - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan) * 100).rolling(3).mean()
+
+    # ══════════════════════════════════════════════════
+    # 2. 거래량 서프라이즈 지표 전체 시리즈 계산
+    # ══════════════════════════════════════════════════
+    # VSR
+    vol_avg_vsr = volume.rolling(vsr_window).mean().shift(1).replace(0, np.nan)
+    vsr_s       = volume / vol_avg_vsr
+
+    # OBV
+    obv = pd.Series(0.0, index=close.index)
+    for i in range(1, n):
+        if close.iloc[i] > close.iloc[i-1]:
+            obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
+        elif close.iloc[i] < close.iloc[i-1]:
+            obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
+        else:
+            obv.iloc[i] = obv.iloc[i-1]
+    # OBV 기울기 근사: (현재 OBV - N일 전 OBV) / (N * 평균거래량)
+    obv_slope_s = obv.diff(obv_window) / (volume.rolling(obv_window).mean().replace(0, np.nan) * obv_window)
+    obv_norm_s  = obv_slope_s.clip(-1, 1).fillna(0)
+
+    # VWAP (rolling vwap_window일)
+    tp        = (high + low + close) / 3.0
+    vwap_s    = (tp * volume).rolling(vwap_window).sum() / volume.rolling(vwap_window).sum().replace(0, np.nan)
+    vwap_diff = (close - vwap_s) / vwap_s.replace(0, np.nan)
+    vwap_sig_s = vwap_diff.clip(-0.02, 0.02) / 0.02   # [-1, 1]
+
+    # ══════════════════════════════════════════════════
+    # 3. 모멘텀 지표 전체 시리즈 계산
+    # ══════════════════════════════════════════════════
+    ema_f_s = close.ewm(span=ema_fast, adjust=False).mean()
+    ema_sl_s = close.ewm(span=ema_slow,  adjust=False).mean()
+
+    # 가격 모멘텀 수익률
+    mom_ret = close.pct_change(mom_period)
+
+    # ADX
+    prev_c   = close.shift(1)
+    tr       = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
+    up_move  = high.diff()
+    dn_move  = -low.diff()
+    dm_plus  = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+    dm_minus = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+    atr_adx  = tr.ewm(span=14, adjust=False).mean()
+    di_plus  = 100 * pd.Series(dm_plus,  index=close.index).ewm(span=14, adjust=False).mean() / atr_adx.replace(0, np.nan)
+    di_minus = 100 * pd.Series(dm_minus, index=close.index).ewm(span=14, adjust=False).mean() / atr_adx.replace(0, np.nan)
+    dx       = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)
+    adx_s    = dx.ewm(span=14, adjust=False).mean()
+
+    # ══════════════════════════════════════════════════
+    # 4. 시뮬레이션
+    # ══════════════════════════════════════════════════
     cash      = float(initial_cash)
-    position  = 0      # 보유 수량
-    avg_cost  = 0.0    # 매수 평균단가
+    position  = 0
+    avg_cost  = 0.0
     equity_curve: list[dict] = []
     trades:       list[dict] = []
 
-    start_idx = max(rsi_period, bb_period)
-    for i in range(start_idx, len(close)):
-        price  = float(close.iloc[i])
-        r      = float(rsi_s.iloc[i])
-        lo     = float(lower.iloc[i])
-        hi     = float(upper.iloc[i])
-        d      = dates[i]
+    # 가중치: 트럼프 제외 재배분
+    W_TECH = 0.40 / 0.90
+    W_VOL  = 0.25 / 0.90
+    W_MOM  = 0.25 / 0.90
 
-        # ── 신호 판단 (OR 조건: RSI 또는 BB 중 하나만 충족해도 시그널) ──
-        # BUY:  RSI 과매도 OR 볼린저 하단 이탈 (미보유 상태)
-        # SELL: RSI 과매수 OR 볼린저 상단 돌파 (보유 상태)
+    for i in range(min_bars, n):
+        price = float(close.iloc[i])
+        d     = dates[i]
+
+        # ── 기술 점수 ──────────────────────────────────
+        ts = 0.0
+        r  = float(rsi_s.iloc[i])
+        if r < rsi_oversold:   ts += 1.0
+        elif r > rsi_overbought: ts -= 1.0
+
+        if float(close.iloc[i]) <= float(bb_lower.iloc[i]):  ts += 1.0
+        elif float(close.iloc[i]) >= float(bb_upper.iloc[i]): ts -= 1.0
+
+        if i >= 1:
+            pd_ = float(macd_line.iloc[i-1]) - float(macd_sig.iloc[i-1])
+            cd_ = float(macd_line.iloc[i])   - float(macd_sig.iloc[i])
+            if pd_ <= 0 < cd_:   ts += 1.0
+            elif pd_ >= 0 > cd_: ts -= 1.0
+            elif cd_ > 0:        ts += 0.5
+            elif cd_ < 0:        ts -= 0.5
+
+        e20, e50, e200 = float(ema20_s.iloc[i]), float(ema50_s.iloc[i]), float(ema200_s.iloc[i])
+        if e20 > e50 > e200:     ts += 1.0
+        elif e20 < e50 < e200:   ts -= 1.0
+        elif price > e200:       ts += 0.5
+        else:                    ts -= 0.5
+
+        va = float(vol_avg20.iloc[i]) if not np.isnan(float(vol_avg20.iloc[i])) else 0
+        if va > 0 and float(volume.iloc[i]) >= va * 1.5:
+            ts += 0.5 if ts > 0 else (-0.5 if ts < 0 else 0)
+
+        k_val = float(stoch_k.iloc[i]) if not np.isnan(float(stoch_k.iloc[i])) else 50
+        if k_val < 20:   ts += 0.5
+        elif k_val > 80: ts -= 0.5
+
+        tech_norm = float(np.tanh(ts / 2.0))  # tanh 정규화: 하드코딩 분모 대신 부드러운 압착
+
+        # ── 거래량 서프라이즈 점수 ─────────────────────
+        vsr_val = float(vsr_s.iloc[i]) if not np.isnan(float(vsr_s.iloc[i])) else 1.0
+        obv_n   = float(obv_norm_s.iloc[i])
+        vwap_n  = float(vwap_sig_s.iloc[i]) if not np.isnan(float(vwap_sig_s.iloc[i])) else 0.0
+
+        vsr_score = 0.0
+        if vsr_val >= 3.0:   vsr_score = 0.6
+        elif vsr_val >= 2.0: vsr_score = 0.4
+        elif vsr_val >= 1.5: vsr_score = 0.2
+        elif vsr_val <= 0.5: vsr_score = -0.1
+        vsr_dir = vsr_score * (1.0 if obv_n >= 0 else -1.0)
+
+        # PV divergence (5일 비교)
+        if i >= 5:
+            pc5 = (price - float(close.iloc[i-5])) / float(close.iloc[i-5]) if float(close.iloc[i-5]) > 0 else 0
+            vm5 = volume.iloc[i-5:i].mean()
+            vc5 = (float(volume.iloc[i]) - vm5) / vm5 if vm5 > 0 else 0
+            if   pc5 > 0 and vc5 > 0.3:  pv_d = 0.5
+            elif pc5 > 0 and vc5 < -0.3: pv_d = -0.3
+            elif pc5 < 0 and vc5 > 0.5:  pv_d = -0.5
+            elif pc5 < 0 and vc5 < -0.3: pv_d = 0.2
+            else:                         pv_d = 0.0
+        else:
+            pv_d = 0.0
+
+        vol_score = max(-1.0, min(1.0, obv_n * 0.35 + vsr_dir * 0.30 + vwap_n * 0.20 + pv_d * 0.15))
+
+        # ── 모멘텀 점수 ────────────────────────────────
+        ms = 0.0
+        ef_cur = float(ema_f_s.iloc[i])
+        es_cur = float(ema_sl_s.iloc[i])
+        if i >= 1:
+            ef_p = float(ema_f_s.iloc[i-1])
+            es_p = float(ema_sl_s.iloc[i-1])
+            prev_gap_m = ef_p - es_p
+            curr_gap_m = ef_cur - es_cur
+            if prev_gap_m <= 0 < curr_gap_m:   ms += 2.0
+            elif prev_gap_m >= 0 > curr_gap_m: ms -= 2.0
+            elif curr_gap_m > 0:               ms += 1.0
+            elif curr_gap_m < 0:               ms -= 1.0
+
+        hw = min(high_window, i + 1)
+        recent_hi = float(close.iloc[max(0, i-hw):i+1].max())
+        if recent_hi > 0:
+            prox = (recent_hi - price) / recent_hi
+            if prox <= 0.05:   ms += 1.5
+            elif prox <= 0.10: ms += 0.5
+            elif prox >= 0.20: ms -= 1.0
+
+        mr_val = float(mom_ret.iloc[i]) if not np.isnan(float(mom_ret.iloc[i])) else 0
+        if   mr_val >= 0.10: ms += 1.0
+        elif mr_val >= 0.03: ms += 0.5
+        elif mr_val <= -0.10: ms -= 1.0
+        elif mr_val <= -0.03: ms -= 0.5
+
+        adx_val = float(adx_s.iloc[i]) if not np.isnan(float(adx_s.iloc[i])) else 20
+        adx_mul = 1.0 if adx_val >= 25 else (0.6 if adx_val >= 15 else 0.3)
+        ms *= adx_mul
+
+        mom_norm = float(np.tanh(ms / 2.0))  # tanh 정규화: 하드코딩 분모 대신 부드러운 압착
+
+        # ── 복합 점수 ───────────────────────────────────
+        composite = tech_norm * W_TECH + vol_score * W_VOL + mom_norm * W_MOM
+
+        # ── 시그널 판단 ─────────────────────────────────
         signal = "HOLD"
         if position == 0:
-            if r < rsi_oversold or price <= lo:
+            if composite >= composite_buy:
                 signal = "BUY"
         else:
-            if r > rsi_overbought or price >= hi:
+            if composite <= composite_sell:
                 signal = "SELL"
 
-        # 매매 체결
+        # ── 체결 ────────────────────────────────────────
         if signal == "BUY" and cash >= price * order_qty:
-            cost       = price * order_qty
-            cash      -= cost
-            position  += order_qty
-            avg_cost   = price
+            cash     -= price * order_qty
+            position += order_qty
+            avg_cost  = price
             trades.append({"date": d, "side": "BUY", "price": round(price, 4), "qty": order_qty})
-
         elif signal == "SELL" and position > 0:
-            qty       = position
-            pnl       = (price - avg_cost) * qty
-            cash     += price * qty
-            trades.append({
-                "date": d, "side": "SELL", "price": round(price, 4),
-                "qty": qty, "pnl": round(pnl, 2),
-            })
+            pnl_t   = (price - avg_cost) * position
+            cash   += price * position
+            trades.append({"date": d, "side": "SELL", "price": round(price, 4),
+                           "qty": position, "pnl": round(pnl_t, 2)})
             position = 0
             avg_cost = 0.0
 
-        # 에쿼티 = 현금 + 평가금액
         equity = cash + position * price
         equity_curve.append({
-            "date":   d,
-            "equity": round(equity, 2),
-            "rsi":    round(r, 2),
-            "close":  round(price, 4),
-            "signal": signal,   # "BUY" / "SELL" / "HOLD" — 차트 마커용
+            "date":      d,
+            "equity":    round(equity, 2),
+            "rsi":       round(r, 2),
+            "close":     round(price, 4),
+            "signal":    signal,
+            "composite": round(composite, 4),
         })
 
-    # ── 미체결 포지션 강제 청산 (마지막 가격) ──────────────────────────
+    # ── 미체결 포지션 강제 청산 ─────────────────────────
     if position > 0:
         last_price = float(close.iloc[-1])
         pnl = (last_price - avg_cost) * position
         cash += last_price * position
-        trades.append({
-            "date": dates[-1], "side": "SELL(청산)",
-            "price": round(last_price, 4), "qty": position,
-            "pnl": round(pnl, 2),
-        })
+        trades.append({"date": dates[-1], "side": "SELL(청산)",
+                       "price": round(last_price, 4), "qty": position, "pnl": round(pnl, 2)})
         if equity_curve:
             equity_curve[-1]["equity"] = round(cash, 2)
 
@@ -1352,27 +1535,26 @@ def _run_backtest_on_df(
     pf          = round(sum(wins) / abs(sum(losses)), 2) if losses and sum(wins) > 0 else (999 if wins else 0)
     ret_pct     = round((equity_curve[-1]["equity"] - initial_cash) / initial_cash * 100, 2) if equity_curve else 0
 
-    # MDD
     mdd = 0.0
     peak = initial_cash
     for pt in equity_curve:
         eq = pt["equity"]
         if eq > peak: peak = eq
-        if peak > 0: mdd = max(mdd, (peak - eq) / peak * 100)
+        if peak > 0:  mdd = max(mdd, (peak - eq) / peak * 100)
 
     return {
         "equity_curve": equity_curve,
-        "trades":       trades[-100:],   # 최근 100건만
+        "trades":       trades[-100:],
         "summary": {
-            "initial_cash":    initial_cash,
-            "final_equity":    equity_curve[-1]["equity"] if equity_curve else initial_cash,
+            "initial_cash":     initial_cash,
+            "final_equity":     equity_curve[-1]["equity"] if equity_curve else initial_cash,
             "total_return_pct": ret_pct,
-            "total_pnl":       total_pnl,
-            "total_trades":    len(pnls),
-            "wins":            len(wins),
-            "losses":          len(losses),
-            "win_rate":        win_rate,
-            "profit_factor":   pf,
+            "total_pnl":        total_pnl,
+            "total_trades":     len(pnls),
+            "wins":             len(wins),
+            "losses":           len(losses),
+            "win_rate":         win_rate,
+            "profit_factor":    pf,
             "mdd":             round(mdd, 2),
             "best_trade":      round(max(pnls), 2) if pnls else 0,
             "worst_trade":     round(min(pnls), 2) if pnls else 0,
@@ -1463,14 +1645,33 @@ def _api_backtest_inner():
 
     def _run(p: dict) -> dict:
         return _run_backtest_on_df(
-            df           = df_full.copy(),
-            rsi_period   = _p(p, "rsi_period",   14),
+            df              = df_full.copy(),
+            # 기술
+            rsi_period      = _p(p, "rsi_period",      14),
             rsi_oversold    = _p(p, "rsi_oversold",    30.0),
             rsi_overbought  = _p(p, "rsi_overbought",  70.0),
-            bb_period    = _p(p, "bb_period",    20),
-            bb_std       = _p(p, "bb_std",       2.0),
-            initial_cash = initial_cash,
-            order_qty    = order_qty,
+            bb_period       = _p(p, "bb_period",       20),
+            bb_std          = _p(p, "bb_std",          2.0),
+            tech_buy_thr    = _p(p, "tech_buy_thr",    2.0),
+            tech_sell_thr   = _p(p, "tech_sell_thr",  -2.0),
+            # 거래량 서프라이즈
+            vsr_window      = _p(p, "vsr_window",      20),
+            obv_window      = _p(p, "obv_window",      14),
+            vwap_window     = _p(p, "vwap_window",     20),
+            vol_threshold   = _p(p, "vol_threshold",   0.25),
+            # 모멘텀
+            ema_fast        = _p(p, "ema_fast",        20),
+            ema_slow        = _p(p, "ema_slow",        50),
+            mom_period      = _p(p, "mom_period",      20),
+            high_window     = _p(p, "high_window",     52),
+            mom_buy_thr     = _p(p, "mom_buy_thr",     2.5),
+            mom_sell_thr    = _p(p, "mom_sell_thr",   -2.5),
+            # 복합 임계값
+            composite_buy   = _p(p, "composite_buy",   0.40),
+            composite_sell  = _p(p, "composite_sell", -0.40),
+            # 공통
+            initial_cash    = initial_cash,
+            order_qty       = order_qty,
         )
 
     result_a = _run(params_a)

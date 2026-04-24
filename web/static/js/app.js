@@ -78,7 +78,7 @@ function refreshDashboard() {
           return `
           <tr>
             <td><strong>${ticker}</strong></td>
-            <td><span class="${sigClass(v.sentiment)}" title="감성점수: ${v.sentiment_score ?? '-'}">${v.sentiment || '--'}</span></td>
+            <td><span class="${sigClass(v.sentiment)}" title="거래량점수: ${v.sentiment_score ?? '-'}">${v.sentiment || '--'}</span></td>
             <td><span class="${sigClass(v.technical)}" title="${techTitle}">${v.technical || '--'} <small style="opacity:.6">${v.tech_score != null ? v.tech_score : ''}</small></span></td>
             <td><span class="${sigClass(v.momentum)}" title="모멘텀점수: ${v.momentum_score ?? '-'}">${v.momentum || '--'}</span></td>
             <td style="color:${csColor};font-weight:600">${csText}</td>
@@ -673,12 +673,49 @@ function loadHoldings() {
   fetch('/api/holdings')
     .then(r => r.json())
     .then(data => {
-      const tbody = document.getElementById('holdings-tbody');
+      const tbody   = document.getElementById('holdings-tbody');
+      const summary = document.getElementById('portfolio-summary');
       if (!tbody) return;
+
       if (!data || data.length === 0) {
         tbody.innerHTML = '<tr><td colspan="12" class="empty">보유종목 없음</td></tr>';
+        if (summary) summary.style.display = 'none';
         return;
       }
+
+      // ── 포트폴리오 합계 계산 ──────────────────────────────
+      let totalInvested = 0;   // 총 투자금액 (매수평균 × 수량)
+      let totalCurrent  = 0;   // 총 현재평가금액 (현재가 × 수량)
+      data.forEach(h => {
+        const qty   = Number(h.qty)        || 0;
+        const avg   = Number(h.avg_price)  || 0;
+        const last  = Number(h.last_price) || 0;
+        totalInvested += avg  * qty;
+        totalCurrent  += last * qty;
+      });
+      const totalPnl  = totalCurrent - totalInvested;
+      const totalRate = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
+
+      if (summary) {
+        summary.style.display = 'flex';
+        const fmt = v => Number(v.toFixed(0)).toLocaleString();
+        const sign = totalPnl >= 0 ? '+' : '';
+        const rateSign = totalRate >= 0 ? '+' : '';
+        const rateColor = totalRate > 0 ? 'var(--buy)' : totalRate < 0 ? 'var(--sell)' : 'var(--text-main)';
+
+        document.getElementById('port-invested').textContent = fmt(totalInvested) + '원';
+        document.getElementById('port-current').textContent  = fmt(totalCurrent)  + '원';
+
+        const pnlEl = document.getElementById('port-pnl');
+        pnlEl.textContent = sign + fmt(totalPnl) + '원';
+        pnlEl.style.color = rateColor;
+
+        const rateEl = document.getElementById('port-rate');
+        rateEl.textContent = rateSign + totalRate.toFixed(2) + '%';
+        rateEl.style.color = rateColor;
+      }
+
+      // ── 종목 행 렌더링 ────────────────────────────────────
       tbody.innerHTML = data.map(h => {
         const pnlClass = h.pnl_pct > 0 ? 'sig-buy' : h.pnl_pct < 0 ? 'sig-sell' : '';
         const pnlSign  = h.pnl_pct > 0 ? '+' : '';
@@ -1169,11 +1206,21 @@ function btLoadCurrent(set) {
   const p = _currentSettings;
   const prefix = `bt-${set}-`;
   const map = {
-    'rsi-period':    p.RSI_PERIOD    || '14',
-    'rsi-oversold':  p.RSI_OVERSOLD  || '30',
-    'rsi-overbought':p.RSI_OVERBOUGHT|| '70',
-    'bb-period':     p.BB_PERIOD     || '20',
-    'bb-std':        p.BB_STD        || '2.0',
+    'rsi-period':      p.RSI_PERIOD     || '14',
+    'rsi-oversold':    p.RSI_OVERSOLD   || '30',
+    'rsi-overbought':  p.RSI_OVERBOUGHT || '70',
+    'bb-period':       p.BB_PERIOD      || '20',
+    'bb-std':          p.BB_STD         || '2.0',
+    'tech-buy-thr':    p.TECH_BUY_THR   || '2.0',
+    'vsr-window':      p.VSR_WINDOW     || '20',
+    'obv-window':      p.OBV_WINDOW     || '14',
+    'vwap-window':     p.VWAP_WINDOW    || '20',
+    'ema-fast':        p.EMA_FAST       || '20',
+    'ema-slow':        p.EMA_SLOW       || '50',
+    'mom-period':      p.MOM_PERIOD     || '20',
+    'high-window':     p.HIGH_WINDOW    || '52',
+    'composite-buy':   p.COMPOSITE_BUY  || '0.40',
+    'composite-sell':  p.COMPOSITE_SELL || '-0.40',
   };
   Object.entries(map).forEach(([k, v]) => {
     const el = document.getElementById(prefix + k);
@@ -1193,13 +1240,31 @@ function btToggleB(on) {
 
 /* 파라미터 객체 수집 헬퍼 */
 function btCollectParams(prefix) {
-  const g = id => parseFloat(document.getElementById(prefix + id)?.value) || 0;
+  const g  = id => parseFloat(document.getElementById(prefix + id)?.value) || 0;
+  const gi = id => parseInt(document.getElementById(prefix + id)?.value)   || 0;
   return {
-    rsi_period:     g('rsi-period'),
-    rsi_oversold:   g('rsi-oversold'),
-    rsi_overbought: g('rsi-overbought'),
-    bb_period:      g('bb-period'),
-    bb_std:         g('bb-std'),
+    // 기술
+    rsi_period:      gi('rsi-period')     || 14,
+    rsi_oversold:    g('rsi-oversold')    || 30,
+    rsi_overbought:  g('rsi-overbought')  || 70,
+    bb_period:       gi('bb-period')      || 20,
+    bb_std:          g('bb-std')          || 2.0,
+    tech_buy_thr:    g('tech-buy-thr')    || 2.0,
+    tech_sell_thr:   -(g('tech-buy-thr') || 2.0),
+    // 거래량 서프라이즈
+    vsr_window:      gi('vsr-window')     || 20,
+    obv_window:      gi('obv-window')     || 14,
+    vwap_window:     gi('vwap-window')    || 20,
+    // 모멘텀
+    ema_fast:        gi('ema-fast')       || 20,
+    ema_slow:        gi('ema-slow')       || 50,
+    mom_period:      gi('mom-period')     || 20,
+    high_window:     gi('high-window')    || 52,
+    mom_buy_thr:     2.5,
+    mom_sell_thr:   -2.5,
+    // 복합 임계값
+    composite_buy:   g('composite-buy')  || 0.40,
+    composite_sell:  g('composite-sell') || -0.40,
   };
 }
 

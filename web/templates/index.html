@@ -133,7 +133,7 @@
         <thead>
           <tr>
             <th>종목</th>
-            <th>뉴스 감성</th>
+            <th>거래량 서프라이즈</th>
             <th>기술적 분석</th>
             <th>모멘텀</th>
             <th>복합점수</th>
@@ -427,17 +427,17 @@
           </div>
         </div>
 
-        <div class="param-section-title">📰 뉴스 감성 분석</div>
+        <div class="param-section-title">📊 거래량 서프라이즈 전략</div>
         <div class="param-grid">
           <div class="form-group">
-            <label>감성 점수 임계값 (SENTIMENT_THRESHOLD)</label>
-            <input type="number" id="SENTIMENT_THRESHOLD" min="0.1" max="1.0" step="0.05" placeholder="0.3"/>
-            <span class="hint">이 값 이상/이하 → BUY/SELL (기본: 0.3)</span>
+            <label>거래량 임계값 (VOLUME_THRESHOLD)</label>
+            <input type="number" id="VOLUME_THRESHOLD" min="0.1" max="1.0" step="0.05" placeholder="0.25"/>
+            <span class="hint">이 값 이상/이하 → BUY/SELL (기본: 0.25)</span>
           </div>
           <div class="form-group">
-            <label>최대 헤드라인 수 (MAX_HEADLINES)</label>
-            <input type="number" id="MAX_HEADLINES" min="1" max="50" placeholder="15"/>
-            <span class="hint">LLM에 전달할 뉴스 수 (기본: 15)</span>
+            <label>거래량 기준 기간 (VSR_WINDOW)</label>
+            <input type="number" id="VSR_WINDOW" min="5" max="60" placeholder="20"/>
+            <span class="hint">VSR 평균 거래량 기간, 거래일 (기본: 20)</span>
           </div>
         </div>
 
@@ -470,6 +470,27 @@
       <div class="table-toolbar">
         <button onclick="loadHoldings()">🔄 새로고침</button>
       </div>
+
+      <!-- 포트폴리오 요약 카드 -->
+      <div class="portfolio-summary" id="portfolio-summary" style="display:none">
+        <div class="port-card">
+          <div class="port-label">💰 총 투자금액</div>
+          <div class="port-value" id="port-invested">-</div>
+        </div>
+        <div class="port-card">
+          <div class="port-label">📈 현재 평가금액</div>
+          <div class="port-value" id="port-current">-</div>
+        </div>
+        <div class="port-card">
+          <div class="port-label">💹 평가손익</div>
+          <div class="port-value" id="port-pnl">-</div>
+        </div>
+        <div class="port-card port-card-rate">
+          <div class="port-label">📊 전체 수익률</div>
+          <div class="port-value port-rate" id="port-rate">-</div>
+        </div>
+      </div>
+
       <table class="signal-table">
         <thead>
           <tr>
@@ -681,12 +702,36 @@
             <div class="param-section-title">🅐 파라미터 세트 A
               <button class="bt-load-current" onclick="btLoadCurrent('a')" title="현재 전략 설정 불러오기">⬇ 현재 설정 불러오기</button>
             </div>
+
+            <div class="param-section-title" style="font-size:11px;margin-top:4px">📊 기술적 분석 (가중 40%)</div>
             <div class="bt-param-grid">
               <div class="form-group"><label>RSI 기간</label><input type="number" id="bt-a-rsi-period" value="14" min="2"/></div>
               <div class="form-group"><label>과매도 기준</label><input type="number" id="bt-a-rsi-oversold" value="30" min="1" max="49"/></div>
               <div class="form-group"><label>과매수 기준</label><input type="number" id="bt-a-rsi-overbought" value="70" min="51" max="99"/></div>
               <div class="form-group"><label>BB 기간</label><input type="number" id="bt-a-bb-period" value="20" min="5"/></div>
               <div class="form-group"><label>BB 표준편차</label><input type="number" id="bt-a-bb-std" value="2.0" step="0.1" min="0.5"/></div>
+              <div class="form-group"><label>기술 매수 임계값</label><input type="number" id="bt-a-tech-buy-thr" value="2.0" step="0.1"/></div>
+            </div>
+
+            <div class="param-section-title" style="font-size:11px;margin-top:8px">📦 거래량 서프라이즈 (가중 25%)</div>
+            <div class="bt-param-grid">
+              <div class="form-group"><label>VSR 기준기간</label><input type="number" id="bt-a-vsr-window" value="20" min="5"/></div>
+              <div class="form-group"><label>OBV 기울기 기간</label><input type="number" id="bt-a-obv-window" value="14" min="5"/></div>
+              <div class="form-group"><label>VWAP 기간</label><input type="number" id="bt-a-vwap-window" value="20" min="5"/></div>
+            </div>
+
+            <div class="param-section-title" style="font-size:11px;margin-top:8px">🚀 모멘텀 (가중 25%)</div>
+            <div class="bt-param-grid">
+              <div class="form-group"><label>EMA 빠름</label><input type="number" id="bt-a-ema-fast" value="20" min="3"/></div>
+              <div class="form-group"><label>EMA 느림</label><input type="number" id="bt-a-ema-slow" value="50" min="10"/></div>
+              <div class="form-group"><label>모멘텀 기간</label><input type="number" id="bt-a-mom-period" value="20" min="5"/></div>
+              <div class="form-group"><label>신고가 윈도우</label><input type="number" id="bt-a-high-window" value="52" min="10"/></div>
+            </div>
+
+            <div class="param-section-title" style="font-size:11px;margin-top:8px">⚖️ 복합 임계값</div>
+            <div class="bt-param-grid">
+              <div class="form-group"><label>복합 매수 임계값</label><input type="number" id="bt-a-composite-buy" value="0.40" step="0.05" min="0"/></div>
+              <div class="form-group"><label>복합 매도 임계값</label><input type="number" id="bt-a-composite-sell" value="-0.40" step="0.05" max="0"/></div>
             </div>
           </div>
 
@@ -699,12 +744,29 @@
               </label>
             </div>
             <div id="bt-b-fields" style="opacity:.35;pointer-events:none">
+              <div class="param-section-title" style="font-size:11px;margin-top:4px">📊 기술적 분석</div>
               <div class="bt-param-grid">
                 <div class="form-group"><label>RSI 기간</label><input type="number" id="bt-b-rsi-period" value="14" min="2"/></div>
                 <div class="form-group"><label>과매도 기준</label><input type="number" id="bt-b-rsi-oversold" value="25" min="1" max="49"/></div>
                 <div class="form-group"><label>과매수 기준</label><input type="number" id="bt-b-rsi-overbought" value="75" min="51" max="99"/></div>
                 <div class="form-group"><label>BB 기간</label><input type="number" id="bt-b-bb-period" value="20" min="5"/></div>
                 <div class="form-group"><label>BB 표준편차</label><input type="number" id="bt-b-bb-std" value="2.0" step="0.1" min="0.5"/></div>
+                <div class="form-group"><label>기술 매수 임계값</label><input type="number" id="bt-b-tech-buy-thr" value="2.0" step="0.1"/></div>
+              </div>
+              <div class="param-section-title" style="font-size:11px;margin-top:8px">📦 거래량 서프라이즈</div>
+              <div class="bt-param-grid">
+                <div class="form-group"><label>VSR 기준기간</label><input type="number" id="bt-b-vsr-window" value="20" min="5"/></div>
+                <div class="form-group"><label>OBV 기간</label><input type="number" id="bt-b-obv-window" value="14" min="5"/></div>
+              </div>
+              <div class="param-section-title" style="font-size:11px;margin-top:8px">🚀 모멘텀</div>
+              <div class="bt-param-grid">
+                <div class="form-group"><label>EMA 빠름</label><input type="number" id="bt-b-ema-fast" value="20" min="3"/></div>
+                <div class="form-group"><label>EMA 느림</label><input type="number" id="bt-b-ema-slow" value="50" min="10"/></div>
+              </div>
+              <div class="param-section-title" style="font-size:11px;margin-top:8px">⚖️ 복합 임계값</div>
+              <div class="bt-param-grid">
+                <div class="form-group"><label>복합 매수</label><input type="number" id="bt-b-composite-buy" value="0.40" step="0.05" min="0"/></div>
+                <div class="form-group"><label>복합 매도</label><input type="number" id="bt-b-composite-sell" value="-0.40" step="0.05" max="0"/></div>
               </div>
             </div>
           </div>
