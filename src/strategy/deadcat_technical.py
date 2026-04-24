@@ -24,6 +24,16 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# tanh 정규화 스케일 팩터
+# raw score가 이 값일 때 tanh 출력이 약 0.76 → 적당한 강도로 매핑
+# 기술 전략 최대 raw score ≈ 5.5, scale=2.0 → tanh(5.5/2.0)=0.99
+_SCORE_SCALE = 2.0
+
+
+def _tanh_norm(score: float) -> float:
+    """raw 전략 점수를 tanh로 [-1, +1]에 부드럽게 압착한다."""
+    return float(np.tanh(score / _SCORE_SCALE))
+
 
 class DeadcatTechnicalStrategy:
     """멀티 지표 점수 기반 강화 기술적 분석 전략."""
@@ -304,10 +314,15 @@ class DeadcatTechnicalStrategy:
             logger.info("%s StochRSI_K=%.1f → %+.1f", self.ticker, k, s)
 
         # ── 최종 결정 ──────────────────────────────────────────────────
-        logger.info("%s 기술점수 합계=%.2f | 상세=%s", self.ticker, score, breakdown)
+        # tanh 정규화: raw score → [-1.0, +1.0] 연속값으로 압착
+        norm_score = _tanh_norm(score)
+        logger.info(
+            "%s 기술점수 합계(raw=%.2f → norm=%.4f) | 상세=%s",
+            self.ticker, score, norm_score, breakdown,
+        )
 
         if score >= self.buy_threshold:
-            return "BUY", score, breakdown
+            return "BUY", norm_score, breakdown
         if score <= self.sell_threshold:
-            return "SELL", score, breakdown
-        return "HOLD", score, breakdown
+            return "SELL", norm_score, breakdown
+        return "HOLD", norm_score, breakdown

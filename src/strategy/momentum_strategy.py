@@ -26,6 +26,16 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# tanh 정규화 스케일 팩터
+# 모멘텀 최대 raw score ≈ 4.5 (EMA_cross=2+Breakout=1.5+Momentum=1)
+# scale=2.0 → tanh(4.5/2.0) ≈ 0.978 → 거의 1.0에 수렴
+_SCORE_SCALE = 2.0
+
+
+def _tanh_norm(score: float) -> float:
+    """raw 전략 점수를 tanh로 [-1, +1]에 부드럽게 압착한다."""
+    return float(np.tanh(score / _SCORE_SCALE))
+
 
 class MomentumStrategy:
     """EMA 크로스 + 52일 신고가 + ADX 기반 모멘텀 전략."""
@@ -220,12 +230,18 @@ class MomentumStrategy:
             # ADX는 점수에 더하는 방식 대신 multiplier로 사용
             score *= adx_multiplier
 
-        logger.info("%s [모멘텀] 총점=%.2f | 상세=%s", self.ticker, score, breakdown)
+        logger.info("%s [모멘텀] 총점(raw=%.2f) | 상세=%s", self.ticker, score, breakdown)
+
+        # tanh 정규화: raw score → [-1.0, +1.0] 연속값으로 압착
+        norm_score = _tanh_norm(score)
+        logger.info("%s [모멘텀] norm_score=%.4f", self.ticker, norm_score)
 
         if score >= self.buy_threshold:
-            return "BUY", score, breakdown
+            return "BUY", norm_score, breakdown
         if score <= self.sell_threshold:
-            return "SELL", score, breakdown
-        return "HOLD", score, breakdown
+            return "SELL", norm_score, breakdown
+        return "HOLD", norm_score, breakdown
+
+
 
 
