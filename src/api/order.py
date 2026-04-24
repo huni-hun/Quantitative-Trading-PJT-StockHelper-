@@ -43,49 +43,27 @@ class OrderAPI:
     # ------------------------------------------------------------------
 
     def market_buy(self, ticker_info: TickerInfo, quantity: int) -> dict:
-        """시장가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다.
-
-        Args:
-            ticker_info: TickerInfo 인스턴스.
-            quantity:    매수 수량 (주).
-        """
+        """시장가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다."""
         if ticker_info.is_domestic:
-            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="buy")
+            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="buy")
         return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="buy")
 
     def market_sell(self, ticker_info: TickerInfo, quantity: int) -> dict:
-        """시장가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다.
-
-        Args:
-            ticker_info: TickerInfo 인스턴스.
-            quantity:    매도 수량 (주).
-        """
+        """시장가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다."""
         if ticker_info.is_domestic:
-            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="sell")
+            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="sell")
         return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="sell")
 
     def limit_buy(self, ticker_info: TickerInfo, quantity: int, price: float) -> dict:
-        """지정가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다.
-
-        Args:
-            ticker_info: TickerInfo 인스턴스.
-            quantity:    매수 수량 (주).
-            price:       지정가 (국내: 원, 해외: 현지 통화).
-        """
+        """지정가 매수 주문을 제출한다. 국내/해외를 자동으로 분기한다."""
         if ticker_info.is_domestic:
-            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="buy", price=int(price))
+            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="buy", price=int(price))
         return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="buy", price=price)
 
     def limit_sell(self, ticker_info: TickerInfo, quantity: int, price: float) -> dict:
-        """지정가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다.
-
-        Args:
-            ticker_info: TickerInfo 인스턴스.
-            quantity:    매도 수량 (주).
-            price:       지정가 (국내: 원, 해외: 현지 통화).
-        """
+        """지정가 매도 주문을 제출한다. 국내/해외를 자동으로 분기한다."""
         if ticker_info.is_domestic:
-            return self._domestic_order(ticker_info.code, quantity, order_type="01", side="sell", price=int(price))
+            return self._domestic_order(ticker_info.code, quantity, order_type="00", side="sell", price=int(price))
         return self._overseas_order(ticker_info.code, ticker_info.exchange, quantity, side="sell", price=price)
 
     # ------------------------------------------------------------------
@@ -114,8 +92,8 @@ class OrderAPI:
         headers["tr_id"] = self._DOMESTIC_TR_IDS[self._env][side]
 
         payload = {
-            "CANO":        Settings.ACCOUNT_NUMBER[:8],
-            "ACNT_PRDT_CD": Settings.ACCOUNT_NUMBER[8:],
+            "CANO":        Settings.get_account_number()[:8],
+            "ACNT_PRDT_CD": Settings.get_account_number()[8:],
             "PDNO":        ticker,
             "ORD_DVSN":    order_type,
             "ORD_QTY":     str(quantity),
@@ -159,8 +137,8 @@ class OrderAPI:
         # 시장가: ORD_DVSN='00', 지정가: ORD_DVSN='00' (해외는 지정가도 00 사용, 가격으로 구분)
         # 해외 시장가 주문 시 ORD_UNPR='0'
         payload = {
-            "CANO":         Settings.ACCOUNT_NUMBER[:8],
-            "ACNT_PRDT_CD": Settings.ACCOUNT_NUMBER[8:],
+            "CANO":         Settings.get_account_number()[:8],
+            "ACNT_PRDT_CD": Settings.get_account_number()[8:],
             "OVRS_EXCG_CD": exchange,
             "PDNO":         ticker,
             "ORD_DVSN":     "00",
